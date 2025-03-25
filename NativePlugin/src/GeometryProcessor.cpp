@@ -14,11 +14,8 @@ struct Oscillator {
     float normal[3];            // Surface normal at the reflection point
     float roundTripTime;        // Time for sound to travel to point and back
     float sigma;                // Width of the Gaussian envelope
-    // Phase tracking variables
-    float lastUpdateTime;     // Time when parameters were last updated
-    float phaseAccumulator;   // Accumulated phase up to lastUpdateTime
     
-    // Enhanced reset method
+    // Initialize/reset the oscillator
     void reset() {
         active = false;
         frequency = 0.0f;
@@ -28,8 +25,6 @@ struct Oscillator {
         phase = 0.0f;
         roundTripTime = 0.0f;
         sigma = 0.05f;
-        lastUpdateTime = 0.0f;
-        phaseAccumulator = 0.0f;
         
         for (int i = 0; i < 3; i++) {
             position[i] = 0.0f;
@@ -37,45 +32,21 @@ struct Oscillator {
         }
     }
     
-    // Enhanced update method with phase tracking
-    void update(float currentTime, float deltaTime, float smoothingRate) {
+    // Update oscillator parameters with smooth transitions
+    void update(float deltaTime) {
         if (!active) return;
         
-        // Calculate time since last update
-        float timeDelta = currentTime - lastUpdateTime;
-        if (timeDelta <= 0.0f) return;
+        // Smoothly approach target values with simple lerp
+        float lerpFactor = 5.0f * deltaTime; // 5.0 = smoothing rate
+        lerpFactor = std::min(lerpFactor, 1.0f);
         
-        // Accumulate phase up to this point (using current frequency)
-        phaseAccumulator += 2.0f * M_PI * frequency * timeDelta;
-        phaseAccumulator = fmod(phaseAccumulator, 2.0f * M_PI);
-        
-        // Now that we've accumulated phase, we can safely change frequency
-        float lerpFactor = 1.0f - std::exp(-deltaTime * smoothingRate);
-        
-        // Store old values to check if significant changes occurred
-        float oldFrequency = frequency;
-        float oldAmplitude = amplitude;
-        
-        // Smoothly approach target values
         frequency = frequency * (1.0f - lerpFactor) + targetFrequency * lerpFactor;
         amplitude = amplitude * (1.0f - lerpFactor) + targetAmplitude * lerpFactor;
-        
-        // Update last update time
-        lastUpdateTime = currentTime;
         
         // Deactivate if amplitude becomes negligible
         if (amplitude < 0.0001f && targetAmplitude < 0.0001f) {
             active = false;
         }
-    }
-    
-    // Get the precise phase at a specific time
-    float getPhaseAtTime(float time) {
-        // Calculate time since last parameter update
-        float timeSinceUpdate = time - lastUpdateTime;
-        
-        // Return accumulated phase plus phase since update
-        return phaseAccumulator + 2.0f * M_PI * frequency * timeSinceUpdate;
     }
 };
 
@@ -255,60 +226,69 @@ private:
             }
         }
         
-        // Then assign each point to the best matching oscillator
+        // Skip oscillator 0 (reserved for reference ping)
         for (int p = 0; p < pointCount; p++) {
             const ProcessedPoint& point = points[p];
             
             // Calculate reflection time
             float roundTripTime = point.params.roundTripTime;
-            float echoTime = pulseTime + roundTripTime;
+            
+            // Find the best oscillator for this point
+            int bestOscIndex = -1;
+            float bestDistSq = 0.1f; // Distance threshold
             
             // Try to find an existing oscillator for this point
-            bool foundMatch = false;
-            int bestOscillator = -1;
-            float bestDistance = 0.1f; // Distance threshold for matching
-            
-            for (int i = 0; i < MAX_OSCILLATORS; i++) {
+            for (int i = 1; i < MAX_OSCILLATORS; i++) {
                 if (oscillators[i].active) {
-                    // Calculate squared distance between positions
+                    // Calculate distance between positions
                     float dx = oscillators[i].position[0] - point.position[0];
                     float dy = oscillators[i].position[1] - point.position[1];
                     float dz = oscillators[i].position[2] - point.position[2];
                     float distSq = dx*dx + dy*dy + dz*dz;
                     
-                    if (distSq < bestDistance) {
-                        bestDistance = distSq;
-                        bestOscillator = i;
-                        foundMatch = true;
+                    if (distSq < bestDistSq) {
+                        bestDistSq = distSq;
+                        bestOscIndex = i;
                     }
                 }
             }
             
-            // If no match found, find a new oscillator
-            if (!foundMatch) {
-                bestOscillator = findBestOscillator(point);
+            // If no match found, find an inactive oscillator
+            if (bestOscIndex < 0) {
+                for (int i = 1; i < MAX_OSCILLATORS; i++) {
+                    if (!oscillators[i].active) {
+                        bestOscIndex = i;
+                        break;
+                    }
+                }
             }
             
-            // Set parameters for this oscillator
-            Oscillator& osc = oscillators[bestOscillator];
-            osc.active = true;
-            
-            // Copy position and normal
-            for (int i = 0; i < 3; i++) {
-                osc.position[i] = point.position[i];
-                osc.normal[i] = point.normal[i];
+            // If still no match, find the quietest oscillator
+            if (bestOscIndex < 0) {
+                float lowestAmp = 1.0f;
+                for (int i = 1; i < MAX_OSCILLATORS; i++) {
+                    if (oscillators[i].amplitude < lowestAmp) {
+                        lowestAmp = oscillators[i].amplitude;
+                        bestOscIndex = i;
+                    }
+                }
             }
             
-            osc.roundTripTime = roundTripTime;
-            osc.sigma = point.params.sigma;
-            osc.targetFrequency = point.params.dopplerFreq;
-            osc.targetAmplitude = point.params.amplitude * 2.0f; // Increase for better audibility
-            
-            // If this is a new oscillator, initialize parameters
-            if (!foundMatch) {
-                osc.frequency = osc.targetFrequency;
-                osc.amplitude = 0.0f; // Start at 0 and fade in
-                osc.phase = 0.0f;
+            // At this point we should have a valid oscillator index
+            if (bestOscIndex > 0) {
+                Oscillator& osc = oscillators[bestOscIndex];
+                osc.active = true;
+                
+                // Set position and parameters
+                for (int i = 0; i < 3; i++) {
+                    osc.position[i] = point.position[i];
+                    osc.normal[i] = point.normal[i];
+                }
+                
+                osc.roundTripTime = roundTripTime;
+                osc.sigma = point.params.sigma;
+                osc.targetFrequency = point.params.dopplerFreq;
+                osc.targetAmplitude = point.params.amplitude;
             }
         }
     }
@@ -336,7 +316,7 @@ public:
         // Initialize all oscillators
         for (int i = 0; i < MAX_OSCILLATORS; i++) {
             oscillators[i].reset();
-            oscillators[i].lastUpdateTime = radarParams.currentTime;
+            // Remove this line: oscillators[i].lastUpdateTime = radarParams.currentTime;
         }
         
         // Allocate audio buffer
@@ -354,9 +334,10 @@ public:
         radarParams.currentTime += deltaTime;
         radarParams.frameTime = deltaTime;
         
-        // Update all oscillators with current time
+        // Update all oscillators with the new delta time
         for (int i = 0; i < MAX_OSCILLATORS; i++) {
-            oscillators[i].update(radarParams.currentTime, deltaTime, 10.0f);
+            // Change this line to match the simplified update method
+            oscillators[i].update(deltaTime);
         }
     }
 
@@ -502,182 +483,94 @@ public:
         // Clear output buffer
         std::fill(outputBuffer, outputBuffer + bufferSize, 0.0f);
         
-        float bufferDuration = static_cast<float>(bufferSize) / sampleRate;
-        static float lastBufferEndTime = 0.0f;
-        static float previousSample = 0.0f;
-
-        // Current time information
+        // Current time and pulse timing
         float currentTime = radarParams.currentTime;
-        float sampleDuration = 1.0f / sampleRate;
-        
-        // Calculate pulse timing
         float pulseInterval = 1.0f / radarParams.pulseRepFreq;
         float lastPulseTime = std::floor(currentTime / pulseInterval) * pulseInterval;
         
-        // For stability, we'll generate each sample directly without buffer shifting
+        // Duration of each sample
+        float sampleDuration = 1.0f / sampleRate;
+        
+        // Generate reference ping if it's a recent pulse
+        if (currentTime - lastPulseTime < 0.1f) {
+            // Make sure oscillator 0 is a ping
+            Oscillator& ping = oscillators[0];
+            ping.active = true;
+            ping.targetFrequency = 880.0f;
+            ping.frequency = 880.0f;
+            ping.targetAmplitude = 0.3f;
+            ping.sigma = 0.05f;
+            ping.roundTripTime = 0.0f; // Immediate
+        }
+        
+        // Direct sample-by-sample generation
         for (int i = 0; i < bufferSize; i++) {
             // Calculate the absolute time for this sample
             float t = currentTime + (i * sampleDuration);
             float sample = 0.0f;
             
-            // Loop through recent pulses (current and previous)
-            for (int pulseIndex = 0; pulseIndex < 3; pulseIndex++) {
-                float pulseTime = lastPulseTime - (pulseIndex * pulseInterval);
+            // Sum contributions from all active oscillators
+            for (int j = 0; j < MAX_OSCILLATORS; j++) {
+                if (!oscillators[j].active || oscillators[j].amplitude < 0.001f) continue;
                 
-                // Skip pulses too far in the past
-                if (currentTime - pulseTime > 2.0f) continue;
+                // Calculate echo time
+                float echoTime = lastPulseTime + oscillators[j].roundTripTime;
                 
-                // 1. Add reference ping for this pulse if it's recent
-                if (pulseIndex == 0 && (t - pulseTime) < 0.2f) {
-                    float pingTime = t - pulseTime;
-                    
-                    // Gaussian envelope for ping
-                    float pingSigma = 0.03f;
-                    float pingEnvelope = std::exp(-(pingTime*pingTime) / (2.0f * pingSigma * pingSigma));
-                    
-                    // Only add if envelope is significant
-                    if (pingEnvelope > 0.01f) {
-                        // Clean sine wave at 880Hz with envelope
-                        float pingFreq = 880.0f;
-                        float pingPhase = 2.0f * M_PI * pingFreq * pingTime;
-                        sample += 0.2f * pingEnvelope * std::sin(pingPhase);
-                    }
+                // Skip if echo hasn't arrived yet or is too old
+                if (t < echoTime) continue;
+                float timeSinceEcho = t - echoTime;
+                if (timeSinceEcho > 6.0f * oscillators[j].sigma) continue;
+                
+                // Gaussian envelope
+                float envelope = std::exp(-(timeSinceEcho*timeSinceEcho) / 
+                                    (2.0f * oscillators[j].sigma * oscillators[j].sigma));
+                
+                // Simple fade-in to prevent clicks
+                float fadeIn = 1.0f;
+                if (timeSinceEcho < 0.005f) { // 5ms fade-in
+                    fadeIn = timeSinceEcho / 0.005f;
                 }
                 
-                // 2. Add contributions from oscillators (echoes)
-                for (int j = 1; j < MAX_OSCILLATORS; j++) {
-                    if (!oscillators[j].active || oscillators[j].amplitude < 0.001f) continue;
-                    
-                    // Calculate when this echo should be heard
-                    float echoTime = pulseTime + oscillators[j].roundTripTime;
-                    
-                    // Skip if the echo hasn't arrived yet or is too old
-                    if (t < echoTime) continue;
-                    
-                    // Calculate time since echo
-                    float timeSinceEcho = t - echoTime;
-                    
-                    // Skip if too old relative to envelope width
-                    if (timeSinceEcho > 6.0f * oscillators[j].sigma) continue;
-                    
-                    // *** IMPROVED ONSET HANDLING ***
-                    // Use a longer fade-in time (15ms) with a smoother curve
-                    float fadeIn = 1.0f;
-                    float fadeInDuration = 0.015f; // 15ms fade-in (was 5ms)
-                    if (timeSinceEcho < fadeInDuration) {
-                        // Smoother S-shaped curve (quintic instead of cubic)
-                        float ratio = timeSinceEcho / fadeInDuration;
-                        fadeIn = ratio * ratio * ratio * (10.0f - 15.0f * ratio + 6.0f * ratio * ratio);
-                    }
-                    
-                    // Calculate Gaussian envelope with a softer onset
-                    // This modifies the Gaussian to have a less steep initial rise
-                    float sigma = oscillators[j].sigma;
-                    float envelope;
-                    if (timeSinceEcho < 0.5f * sigma) {
-                        // Gentler onset for the first part of the envelope
-                        envelope = std::exp(-(timeSinceEcho*timeSinceEcho) / (4.0f * sigma * sigma));
-                    } else {
-                        // Normal Gaussian for the rest
-                        envelope = std::exp(-(timeSinceEcho*timeSinceEcho) / (2.0f * sigma * sigma));
-                    }
-                    
-                    // Skip if envelope is negligible
-                    if (envelope < 0.001f) continue;
-                    
-                    // *** PHASE OFFSET VARIATION ***
-                    // Add a small unique phase offset for each oscillator to reduce constructive interference
-                    // This prevents all echoes from having perfectly aligned phases
-                    float phaseOffset = fmod(j * 0.1f, 2.0f * M_PI); // Different offset for each oscillator
-                    
-                    // Calculate phase for this time point with the offset
-                    float phase = 2.0f * M_PI * oscillators[j].frequency * timeSinceEcho + phaseOffset;
-                    
-                    // Add contribution with combined fade-in and envelope
-                    sample += oscillators[j].amplitude * envelope * fadeIn * std::sin(phase);
-                }
+                // Calculate the phase for this time point
+                float phase = 2.0f * M_PI * oscillators[j].frequency * timeSinceEcho + oscillators[j].phase;
+                
+                // Add this oscillator's contribution
+                sample += oscillators[j].amplitude * envelope * fadeIn * std::sin(phase);
             }
             
-            // Soft clip to prevent harsh distortion
-            if (std::abs(sample) > 0.8f) {
-                float sign = (sample > 0.0f) ? 1.0f : -1.0f;
-                sample = sign * (0.8f + tanh((std::abs(sample) - 0.8f) * 2.0f) * 0.2f);
+            // Simple soft clipping to prevent distortion
+            if (std::abs(sample) > 0.9f) {
+                float sign = (sample > 0) ? 1.0f : -1.0f;
+                sample = sign * (0.9f + (std::abs(sample) - 0.9f) / 
+                            (1.0f + (std::abs(sample) - 0.9f)));
             }
             
             // Store the result
             outputBuffer[i] = sample;
         }
         
-        // Apply a gentle low-pass filter to remove high frequency artifacts
-        float* tempBuffer = new float[bufferSize];
-        std::copy(outputBuffer, outputBuffer + bufferSize, tempBuffer);
-        
-        // Simple 1-pole filter
-        float cutoff = 10000.0f;
-        float RC = 1.0f / (2.0f * M_PI * cutoff);
-        float dt = 1.0f / sampleRate;
-        float alpha = dt / (RC + dt);
-        
-        float lastSample = tempBuffer[0];
-        for (int i = 0; i < bufferSize; i++) {
-            outputBuffer[i] = tempBuffer[i] * alpha + lastSample * (1.0f - alpha);
-            lastSample = outputBuffer[i];
-        }
-        
-        delete[] tempBuffer;
-        
-        // Apply a very gradual volume adjustment for consistency
-        static float lastMaxAmp = 0.5f;
+        // Apply a gentle amplitude adjustment
         float maxAmp = 0.0f;
-        
         for (int i = 0; i < bufferSize; i++) {
             maxAmp = std::max(maxAmp, std::abs(outputBuffer[i]));
         }
         
-        // Extremely smooth amplitude adjustment
-        float targetAmp = 0.6f;
+        // Scale if needed
         if (maxAmp > 0.001f) {
-            // Very gradual approach to target amplitude
-            lastMaxAmp = lastMaxAmp * 0.98f + maxAmp * 0.02f;
-            
             float scale = 1.0f;
-            if (lastMaxAmp > 0.8f) {
-                scale = targetAmp / lastMaxAmp;
-            } else if (lastMaxAmp < 0.3f) {
-                scale = std::min(2.0f, targetAmp / lastMaxAmp);
+            if (maxAmp > 0.9f) {
+                scale = 0.9f / maxAmp; // Prevent clipping
+            } else if (maxAmp < 0.2f) {
+                scale = 0.6f / maxAmp; // Boost weak signals
+                scale = std::min(scale, 3.0f); // Limit boost
             }
             
-            // Apply scaling if significant
             if (std::abs(scale - 1.0f) > 0.05f) {
                 for (int i = 0; i < bufferSize; i++) {
                     outputBuffer[i] *= scale;
                 }
             }
         }
-        
-        // Log statistics occasionally
-        static int logCounter = 0;
-        if (++logCounter % 100 == 0) {
-            int activeCount = 0;
-            for (int i = 0; i < MAX_OSCILLATORS; i++) {
-                if (oscillators[i].active) activeCount++;
-            }
-            
-            printf("Audio stats: Active oscillators=%d, MaxAmp=%.4f\n", activeCount, maxAmp);
-        }
-
-        if (lastBufferEndTime > 0.0f) {
-            // Smooth transition over the first ~20 samples
-            for (int i = 0; i < 20 && i < bufferSize; i++) {
-                float ratio = i / 20.0f;
-                float fade = ratio * ratio * (3.0f - 2.0f * ratio); // Smooth cubic fade
-                outputBuffer[i] = previousSample * (1.0f - fade) + outputBuffer[i] * fade;
-            }
-        }
-
-        // Store the last sample and buffer end time for next iteration
-        previousSample = outputBuffer[bufferSize-1];
-        lastBufferEndTime = currentTime + bufferDuration;
     }
     
     // Debug utility to analyze oscillator state
