@@ -12,6 +12,7 @@ public class GeometryProcessor : MonoBehaviour
         public IntPtr triangles;     // int* - Triangle indices (3 per face)
         public IntPtr faceNormals;   // float* - Computed face normals
         public IntPtr faceCenters;   // float* - Computed face centers
+        public IntPtr triangleAreas; // float* - Computed triangle areas
         public int triangleCount;    // Number of triangles
         public IntPtr transform;     // float* - 4x4 world transform matrix
     }
@@ -41,6 +42,7 @@ public class GeometryProcessor : MonoBehaviour
         
         public AudioParameters parameters;
         public float facingFactor;
+        public float area;            // Triangle area
     }
 
     // Native plugin function imports
@@ -54,12 +56,19 @@ public class GeometryProcessor : MonoBehaviour
     private static extern void SetRadarParameters(float pulseRepFreq, float speedOfSound, float pulseWidth);
 
     [DllImport("geometry_processor")]
+    private static extern void DebugOscillators();
+
+    [DllImport("geometry_processor")]
+    private static extern void DebugBuffer();
+
+    [DllImport("geometry_processor")]
     private static extern void ProcessObjectGeometry(
         [In] ObjectGeometry[] objects,
         int objectCount,
         [In] float[] listenerPosition,
         [In] float[] listenerForward,
         float maxDistance,
+        float reflectionRadius,
         [Out] ProcessedPoint[] outputPoints,
         ref int outputPointCount
     );
@@ -77,13 +86,14 @@ public class GeometryProcessor : MonoBehaviour
         
     // Configuration
     [SerializeField] private int sampleRate = 44100;
-    [SerializeField] private int blockSize = 65536;
+    [SerializeField] private int blockSize = 4096; // Reduced from 8192 for smoother updates
     [SerializeField] private float maxDistance = 10f;
     [SerializeField] private LayerMask objectLayers = -1;
     [SerializeField] private float pulseRepFreq = 2.0f; // Pulses per second
-    [SerializeField] private float sigma = 0.5f; // Add this
-    [SerializeField] private float speedOfSound = 8; // Slower than actual for dramatic effect
-
+    [SerializeField] private float sigma = 0.5f; // Pulse width
+    [SerializeField] private float speedOfSound = 8f; // Slower than actual for dramatic effect
+    [SerializeField] private float reflectionRadius = 0.3f; // 'r' parameter for d*sin(θ)≤r
+    [SerializeField] private bool showDebugVisualization = true;
 
     // Runtime data
     private Camera mainCamera;
@@ -93,28 +103,72 @@ public class GeometryProcessor : MonoBehaviour
     private float[] audioBuffer;
     private MeshFilter[] nearbyMeshes;
 
+    // Double-buffering audio clips
+    private AudioClip clipA;
+    private AudioClip clipB;
+    private bool usingClipA = true;
+    
+    // Timing control for audio updates
+    private float lastAudioUpdateTime = 0f;
+    private float audioUpdateInterval = 0.05f; // 50ms update interval
+
     void Start()
     {
         mainCamera = Camera.main;
         
-        // Setup audio
+        // Setup audio with double buffering
         audioSource = gameObject.AddComponent<AudioSource>();
         audioSource.playOnAwake = true;
         audioSource.spatialBlend = 0;
-        audioSource.loop = true;
+        audioSource.loop = false; // Important: we're managing playback manually
+        audioSource.volume = 1.0f;
         
+        // Allocate buffer for audio synthesis
         audioBuffer = new float[blockSize];
-        var clip = AudioClip.Create("ProcessedAudio", blockSize, 1, sampleRate, false);
-        audioSource.clip = clip;
         
-        InitializeProcessor(sampleRate, blockSize);
+        // Create two audio clips for double buffering
+        clipA = AudioClip.Create("ProcessedAudioA", blockSize, 1, sampleRate, false);
+        clipB = AudioClip.Create("ProcessedAudioB", blockSize, 1, sampleRate, false);
+        
+        // Fill both clips with silence initially
+        float[] silence = new float[blockSize];
+        clipA.SetData(silence, 0);
+        clipB.SetData(silence, 0);
+        
+        // Start with clip A
+        audioSource.clip = clipA;
         audioSource.Play();
-
+        
+        // Initialize the native processor
+        InitializeProcessor(sampleRate, blockSize);
         SetRadarParameters(pulseRepFreq, speedOfSound, sigma);
+        
+        // Initialize timing
+        lastAudioUpdateTime = Time.time;
     }
 
     void Update()
     {
+        // Toggle debug visualization
+        if (Input.GetKeyDown(KeyCode.F1))
+        {
+            showDebugVisualization = !showDebugVisualization;
+            Debug.Log($"Debug visualization: {(showDebugVisualization ? "ON" : "OFF")}");
+        }
+        
+        // Add debug keys for the new functions
+        if (Input.GetKeyDown(KeyCode.F2))
+        {
+            Debug.Log("Debugging oscillator states:");
+            DebugOscillators();
+        }
+        
+        if (Input.GetKeyDown(KeyCode.F3))
+        {
+            Debug.Log("Debugging audio buffer:");
+            DebugBuffer();
+        }
+        
         // Update time in the C++ processor
         UpdateTime(Time.deltaTime);
         
@@ -138,56 +192,102 @@ public class GeometryProcessor : MonoBehaviour
 
         // Process geometry
         ProcessGeometry();
+        
+        // Update audio with double buffering
+        UpdateAudio();
 
-        //VisualizeEchoTiming();
-
-        Debug.Log($"Found {nearbyMeshes.Length} meshes:");
-        foreach (var meshFilter in nearbyMeshes)
+        if (showDebugVisualization)
         {
-            Mesh mesh = meshFilter.mesh;
-            Debug.Log($"Mesh '{meshFilter.gameObject.name}': {mesh.triangles.Length/3} triangles");
+            VisualizeEchoPoints();
         }
     }
 
-    private void VisualizeEchoTiming()
+    private void UpdateAudio()
     {
-        if (processedPoints != null)
+        // Only update at our desired interval to avoid too many audio switches
+        if (Time.time - lastAudioUpdateTime < audioUpdateInterval)
+            return;
+            
+        lastAudioUpdateTime = Time.time;
+        
+        // Check if we need to switch clips
+        bool shouldSwitch = false;
+        
+        // Switch when we're near the end of the current clip or if it's not playing
+        if (audioSource.isPlaying)
         {
-            foreach (var point in processedPoints)
+            // Switch when we're about 80% through the current clip
+            shouldSwitch = audioSource.time >= (audioSource.clip.length * 0.8f);
+        }
+        else
+        {
+            // If not playing, we should start/switch
+            shouldSwitch = true;
+        }
+        
+        if (shouldSwitch)
+        {
+            // Update the clip that's NOT currently playing
+            if (usingClipA)
             {
-                if (point.position == null || point.normal == null) continue;
+                // We're playing clip A, so update clip B
+                clipB.SetData(audioBuffer, 0);
                 
-                Vector3 pos = new Vector3(point.position[0], 
-                                        point.position[1], 
-                                        point.position[2]);
-                Vector3 norm = new Vector3(point.normal[0],
-                                        point.normal[1], 
-                                        point.normal[2]);
-                                        
-                float dist = Vector3.Distance(mainCamera.transform.position, pos);
-                float speedOfSound = 8.0f;
-                float roundTrip = 2f * dist / speedOfSound;
-                
-                // Delay time indicator
-                Vector3 lineStart = pos + Vector3.up * 0.3f;
-                Vector3 lineEnd = lineStart + Vector3.right * (roundTrip * 0.5f);
-                Color timeColor = Color.Lerp(Color.green, Color.red, 
-                                        Mathf.Min(1f, roundTrip / 2.0f));
-                Debug.DrawLine(lineStart, lineEnd, timeColor);
-                
-                // Draw normal vector in blue
-                Debug.DrawLine(pos, pos + norm * 0.5f, Color.blue);
-                
-                // Draw line to listener in yellow
-                Vector3 toListener = (mainCamera.transform.position - pos).normalized;
-                Debug.DrawLine(pos, pos + toListener * 0.3f, Color.yellow);
-                
-                // Facing factor (dot product) visualization
-                float facingFactor = Vector3.Dot(norm, toListener);
-                Color facingColor = facingFactor > 0.7f ? Color.green : 
-                                (facingFactor > 0.4f ? Color.yellow : Color.red);
-                Debug.DrawLine(pos, pos + Vector3.up * (0.1f + facingFactor * 0.2f), facingColor);
+                // Switch to clip B
+                audioSource.clip = clipB;
+                usingClipA = false;
             }
+            else
+            {
+                // We're playing clip B, so update clip A
+                clipA.SetData(audioBuffer, 0);
+                
+                // Switch to clip A
+                audioSource.clip = clipA;
+                usingClipA = true;
+            }
+            
+            // Make sure it's playing
+            if (!audioSource.isPlaying)
+            {
+                audioSource.Play();
+            }
+        }
+    }
+
+    private void VisualizeEchoPoints()
+    {
+        if (processedPoints == null) return;
+        
+        int visiblePoints = 0;
+        
+        foreach (var point in processedPoints)
+        {
+            if (point.position == null || point.normal == null) continue;
+            
+            visiblePoints++;
+            
+            Vector3 pos = new Vector3(point.position[0], 
+                                    point.position[1], 
+                                    point.position[2]);
+            Vector3 norm = new Vector3(point.normal[0],
+                                    point.normal[1], 
+                                    point.normal[2]);
+            
+            // Draw a cross to mark the position
+            float size = 0.05f;
+            Debug.DrawRay(pos, Vector3.up * size, Color.green);
+            Debug.DrawRay(pos, Vector3.right * size, Color.green);
+            Debug.DrawRay(pos, Vector3.forward * size, Color.green);
+            
+            // Draw normal direction
+            Debug.DrawRay(pos, norm * 0.3f, Color.blue);
+        }
+        
+        // Log visible point count periodically
+        if (Time.frameCount % 60 == 0 && visiblePoints > 0)
+        {
+            Debug.Log($"Visible Points: {visiblePoints}");
         }
     }
 
@@ -211,9 +311,10 @@ public class GeometryProcessor : MonoBehaviour
             var vertices = mesh.vertices;
             var triangles = mesh.triangles;
             
-            // Compute face normals and centers
+            // Compute face normals, centers, and areas
             var faceNormals = new Vector3[triangles.Length / 3];
             var faceCenters = new Vector3[triangles.Length / 3];
+            var triangleAreas = new float[triangles.Length / 3];
             
             for (int f = 0; f < triangles.Length; f += 3)
             {
@@ -227,6 +328,9 @@ public class GeometryProcessor : MonoBehaviour
                 
                 // Compute face center
                 faceCenters[f/3] = (v1 + v2 + v3) / 3f;
+                
+                // Compute triangle area
+                triangleAreas[f/3] = 0.5f * Vector3.Cross(v2 - v1, v3 - v1).magnitude;
             }
             
             // Pin all the arrays
@@ -234,11 +338,13 @@ public class GeometryProcessor : MonoBehaviour
             var trianglesHandle = GCHandle.Alloc(triangles, GCHandleType.Pinned);
             var normalsHandle = GCHandle.Alloc(faceNormals, GCHandleType.Pinned);
             var centersHandle = GCHandle.Alloc(faceCenters, GCHandleType.Pinned);
+            var areasHandle = GCHandle.Alloc(triangleAreas, GCHandleType.Pinned);
             
             pinnedArrays.Add(verticesHandle);
             pinnedArrays.Add(trianglesHandle);
             pinnedArrays.Add(normalsHandle);
             pinnedArrays.Add(centersHandle);
+            pinnedArrays.Add(areasHandle);
 
             // Create and pin transform matrix
             var matrix = transform.localToWorldMatrix;
@@ -258,6 +364,7 @@ public class GeometryProcessor : MonoBehaviour
                 triangles = trianglesHandle.AddrOfPinnedObject(),
                 faceNormals = normalsHandle.AddrOfPinnedObject(),
                 faceCenters = centersHandle.AddrOfPinnedObject(),
+                triangleAreas = areasHandle.AddrOfPinnedObject(),
                 triangleCount = triangles.Length / 3,
                 transform = matrixHandle.AddrOfPinnedObject()
             };
@@ -277,12 +384,11 @@ public class GeometryProcessor : MonoBehaviour
             listenerPosArray,
             listenerFwdArray,
             maxDistance,
+            reflectionRadius,
             processedPoints,
             ref pointCount
         );
-
-        Debug.Log($"Processed {pointCount} points with radar");
-
+        
         // Generate audio
         SynthesizeAudio(
             processedPoints,
@@ -290,21 +396,6 @@ public class GeometryProcessor : MonoBehaviour
             audioBuffer,
             blockSize
         );
-
-        if (processedPoints != null && pointCount > 0) {
-            Debug.Log($"First point - Sigma: {processedPoints[0].parameters.sigma}, " +
-                    $"Freq: {processedPoints[0].parameters.baseFreq}, " +
-                    $"Doppler: {processedPoints[0].parameters.dopplerFreq}");
-        }
-
-        float sum = 0;
-        for(int i = 0; i < audioBuffer.Length; i++) {
-            sum += Mathf.Abs(audioBuffer[i]);
-        }
-        Debug.Log($"Audio buffer sum: {sum}, average: {sum/audioBuffer.Length}");
-
-        // Update audio clip
-        audioSource.clip.SetData(audioBuffer, 0);
     }
 
     void OnDestroy()
@@ -328,9 +419,18 @@ public class GeometryProcessor : MonoBehaviour
         // Draw detection sphere
         Gizmos.color = Color.yellow;
         Gizmos.DrawWireSphere(mainCamera.transform.position, maxDistance);
-
-        // Draw processed points and their normals if in play mode
-        if (Application.isPlaying && processedPoints != null)
+        
+        // Optionally visualize the reflection radius parameter
+        if (showDebugVisualization)
+        {
+            // Draw a small sphere to represent the reflection radius parameter
+            Gizmos.color = Color.red;
+            float visualScale = 0.5f; // Scale to make it visible in the scene
+            Gizmos.DrawWireSphere(mainCamera.transform.position, reflectionRadius * visualScale);
+        }
+        
+        // Draw processed points in the editor
+        if (Application.isPlaying && processedPoints != null && showDebugVisualization)
         {
             foreach (var point in processedPoints)
             {
@@ -349,44 +449,7 @@ public class GeometryProcessor : MonoBehaviour
                 
                 // Draw normal direction
                 Gizmos.color = Color.blue;
-                float normalLength = 0.2f;
-                Gizmos.DrawRay(pos, normal * normalLength);
-
-                // Visualize velocity and doppler if available
-                // if (point.velocity != null && point.velocity.Length == 3)
-                // {
-                //     Vector3 velocity = new Vector3(point.velocity[0], 
-                //                                  point.velocity[1], 
-                //                                  point.velocity[2]);
-                    
-                //     // Skip if velocity is too small to visualize
-                //     if (velocity.magnitude < 0.01f) continue;
-                    
-                //     // Calculate approach/recede color
-                //     Vector3 toListener = (mainCamera.transform.position - pos).normalized;
-                //     float relativeVel = Vector3.Dot(velocity, toListener);
-                    
-                //     // Red for approaching, blue for receding
-                //     Gizmos.color = relativeVel > 0 ? 
-                //         Color.Lerp(Color.white, Color.red, Mathf.Min(1f, relativeVel * 5f)) : 
-                //         Color.Lerp(Color.white, Color.blue, Mathf.Min(1f, -relativeVel * 5f));
-                        
-                //     // Draw velocity vector
-                //     Gizmos.DrawRay(pos + normal * normalLength, velocity * 0.5f);
-                    
-                //     // Visualize doppler shift as text
-                //     if (point.parameters.baseFreq > 0)
-                //     {
-                //         float dopplerShift = point.parameters.dopplerFreq - point.parameters.baseFreq;
-                //         string shiftText = dopplerShift > 0 ? 
-                //             $"+{dopplerShift:F1} Hz" : $"{dopplerShift:F1} Hz";
-                            
-                //         // Show doppler shift text next to the point
-                //         #if UNITY_EDITOR
-                //         UnityEditor.Handles.Label(pos + Vector3.up * 0.2f, shiftText);
-                //         #endif
-                //     }
-                // }
+                Gizmos.DrawRay(pos, normal * 0.3f);
             }
         }
     }

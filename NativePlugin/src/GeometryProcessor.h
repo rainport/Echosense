@@ -16,6 +16,7 @@ struct ObjectGeometry {
     int* triangles;       // Array of triangle indices
     float* faceNormals;   // Array of face normal vectors
     float* faceCenters;   // Array of face center positions
+    float* triangleAreas; // Array of triangle areas
     int triangleCount;    // Number of triangles
     float* transform;     // 4x4 world transform matrix
 };
@@ -24,7 +25,7 @@ struct ObjectGeometry {
 struct RadarParameters {
     float pulseRepFreq;     // Pulse repetition frequency (Hz)
     float speedOfSound;     // Speed of sound in medium (m/s)
-    float pulseWidth;  // Add this
+    float pulseWidth;       // Width of Gaussian pulse envelope (sigma)
     float currentTime;      // Current simulation time (s)
     float lastFrameTime;    // Time of last frame (s)
     float frameTime;        // Time elapsed since last frame (s)
@@ -39,6 +40,7 @@ struct ActiveEcho {
     float phase;          // Phase continuity
     float position[3];    // Position in 3D space
     bool isActive;        // Whether this echo is still alive
+    
 };
 
 // Audio parameters for each processed point
@@ -58,6 +60,7 @@ struct ProcessedPoint {
     float velocity[3];      // World space velocity
     AudioParameters params;
     float facingFactor;     // How directly this point faces the listener
+    float area;             // Triangle area for amplitude scaling
 };
 
 extern "C" {
@@ -67,15 +70,19 @@ extern "C" {
     // Update simulation time (call each frame)
     EXPORT_API void UpdateTime(float deltaTime);
     
-    // Process geometry and compute audio parameters
+    // Set radar parameters
+    EXPORT_API void SetRadarParameters(float pulseRepFreq, float speedOfSound, float pulseWidth);
+    
+    // Process geometry to find reflection points
     EXPORT_API void ProcessObjectGeometry(
-        const ObjectGeometry* objects,    // Array of object geometries
-        int objectCount,                  // Number of objects
-        const float* listenerPosition,    // Listener's world position
-        const float* listenerForward,     // Listener's forward vector
-        float maxDistance,                // Maximum distance to process
-        ProcessedPoint* outputPoints,     // Array to receive processed points
-        int* outputPointCount             // Number of points processed
+        const ObjectGeometry* objects,
+        int objectCount,
+        const float* listenerPosition,
+        const float* listenerForward,
+        float maxDistance,
+        float reflectionRadius,
+        ProcessedPoint* outputPoints,
+        int* outputPointCount
     );
     
     // Generate audio from processed points
@@ -85,6 +92,10 @@ extern "C" {
         float* outputBuffer,              // Audio output buffer
         int bufferSize                    // Size of output buffer
     );
+    
+    // Debug functions
+    EXPORT_API void DebugOscillators();
+    EXPORT_API void DebugBuffer();
     
     EXPORT_API void Cleanup();
 };
