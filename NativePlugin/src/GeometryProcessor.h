@@ -63,6 +63,7 @@ struct ProcessedPoint {
     float area;             // Triangle area for amplitude scaling
 };
 
+
 extern "C" {
     // Initialize the processor with audio configuration
     EXPORT_API void InitializeProcessor(int sampleRate, int blockSize);
@@ -91,6 +92,15 @@ extern "C" {
         int pointCount,                   // Number of points
         float* outputBuffer,              // Audio output buffer
         int bufferSize                    // Size of output buffer
+    );
+
+    EXPORT_API void GetTimeFrequencyData(
+        int timeSteps,          // Number of time steps
+        int frequencyBins,      // Number of frequency bins
+        float* outputMagnitudes, // Output buffer for magnitude data (timeSteps * frequencyBins floats)
+        float* outputPhases,     // Output buffer for phase data (timeSteps * frequencyBins floats)
+        float* outputTimeRange,  // [minTime, maxTime] (2 floats)
+        float* outputFreqRange   // [minFreq, maxFreq] (2 floats)
     );
     
     // Debug functions

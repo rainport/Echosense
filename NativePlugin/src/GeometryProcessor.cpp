@@ -76,6 +76,18 @@ private:
     
     // Working memory for geometry processing
     std::vector<ProcessedPoint> workingPoints;
+
+    struct TimeFrequencyData {
+        int timeSteps;
+        int frequencyBins;
+        float* magnitudes;     // Magnitude values
+        float* phases;         // Phase values
+        float minTime;
+        float maxTime;
+        float minFreq;
+        float maxFreq;
+    };
+
     
     // Utility functions
     float dot(const float* a, const float* b) {
@@ -572,6 +584,138 @@ public:
             }
         }
     }
+
+    TimeFrequencyData generateTimeFrequencyData(int timeSteps, int frequencyBins) {
+        TimeFrequencyData result;
+        result.timeSteps = timeSteps;
+        result.frequencyBins = frequencyBins;
+        
+        // Allocate memory for both magnitude and phase data
+        result.magnitudes = new float[timeSteps * frequencyBins];
+        result.phases = new float[timeSteps * frequencyBins];
+        std::fill(result.magnitudes, result.magnitudes + timeSteps * frequencyBins, 0.0f);
+        std::fill(result.phases, result.phases + timeSteps * frequencyBins, 0.0f);
+        
+        // Time range: centered around current time
+        float currentTime = radarParams.currentTime;
+        result.minTime = currentTime - 0.5f;
+        result.maxTime = currentTime + 0.5f;
+        
+        // Linear frequency range: 100Hz to 1000Hz
+        result.minFreq = 100.0f;
+        result.maxFreq = 1000.0f;
+        
+        // Calculate time and frequency step sizes
+        float timeStep = (result.maxTime - result.minTime) / (timeSteps - 1);
+        float freqStep = (result.maxFreq - result.minFreq) / (frequencyBins - 1);
+        
+        // Calculate most recent pulse time
+        float pulseInterval = 1.0f / radarParams.pulseRepFreq;
+        float lastPulseTime = std::floor(currentTime / pulseInterval) * pulseInterval;
+        
+        // Process each active oscillator
+        for (int oscIndex = 0; oscIndex < MAX_OSCILLATORS; oscIndex++) {
+            const Oscillator& osc = oscillators[oscIndex];
+            if (!osc.active || osc.amplitude < 0.001f) continue;
+            
+            // Echo arrival time
+            float echoTime = lastPulseTime + osc.roundTripTime;
+            
+            // Skip if echo is outside our time window
+            if (echoTime < result.minTime || echoTime > result.maxTime) continue;
+            
+            // Calculate frequency bandwidth based on uncertainty principle
+            // σf ≈ 1/(2π·σt) - the longer the time envelope, the narrower the frequency spread
+            float freqSpread = 1.0f / (2.0f * M_PI * osc.sigma);
+            
+            // For each point in the time-frequency grid
+            for (int t = 0; t < timeSteps; t++) {
+                float time = result.minTime + t * timeStep;
+                
+                // Time relative to echo arrival
+                float relativeTime = time - echoTime;
+                
+                // Gaussian envelope in time domain
+                float timeEnvelope = std::exp(-(relativeTime*relativeTime) / 
+                                        (2.0f * osc.sigma * osc.sigma));
+                
+                // Skip if envelope is negligible
+                if (timeEnvelope < 0.01f) continue;
+                
+                for (int f = 0; f < frequencyBins; f++) {
+                    // Calculate frequency for this bin (linear scale)
+                    float freq = result.minFreq + f * freqStep;
+                    
+                    // Gaussian in frequency domain (width proportional to 1/sigma)
+                    float freqDistance = (freq - osc.frequency) / freqSpread;
+                    float freqEnvelope = std::exp(-(freqDistance*freqDistance) / 2.0f);
+                    
+                    // Calculate the magnitude contribution
+                    float contribution = osc.amplitude * timeEnvelope * freqEnvelope;
+                    
+                    // Calculate phase for this time-frequency point
+                    // We use the oscillator's base phase plus the phase accumulated over time
+                    float phase = osc.phase + 2.0f * M_PI * osc.frequency * relativeTime;
+                    phase = std::fmod(phase, 2.0f * M_PI); // Normalize to [0, 2π]
+                    if (phase < 0) phase += 2.0f * M_PI;   // Ensure positive phase
+                    
+                    // Index in the flattened array
+                    int idx = t * frequencyBins + f;
+                    
+                    // For magnitude, we use a complex addition approach to handle overlapping atoms
+                    // This means converting magnitude and phase to complex numbers, adding them,
+                    // then converting back to magnitude and phase
+                    
+                    // Get existing magnitude and phase
+                    float existingMag = result.magnitudes[idx];
+                    float existingPhase = result.phases[idx];
+                    
+                    // Convert to complex numbers
+                    float existingReal = existingMag * std::cos(existingPhase);
+                    float existingImag = existingMag * std::sin(existingPhase);
+                    float newReal = contribution * std::cos(phase);
+                    float newImag = contribution * std::sin(phase);
+                    
+                    // Add complex numbers
+                    float resultReal = existingReal + newReal;
+                    float resultImag = existingImag + newImag;
+                    
+                    // Convert back to magnitude and phase
+                    float resultMag = std::sqrt(resultReal*resultReal + resultImag*resultImag);
+                    float resultPhase = std::atan2(resultImag, resultReal);
+                    
+                    // Store the result
+                    result.magnitudes[idx] = resultMag;
+                    result.phases[idx] = resultPhase;
+                }
+            }
+        }
+        
+        // Normalize the magnitude data to 0-1 range
+        float maxValue = 0.0001f; // Avoid division by zero
+        for (int i = 0; i < timeSteps * frequencyBins; i++) {
+            maxValue = std::max(maxValue, result.magnitudes[i]);
+        }
+        
+        if (maxValue > 0.0001f) {
+            for (int i = 0; i < timeSteps * frequencyBins; i++) {
+                result.magnitudes[i] /= maxValue;
+            }
+        }
+        
+        // No need to normalize phase as it's already in [0, 2π]
+        
+        return result;
+    }
+
+    // Updated cleanup method
+    void freeTimeFrequencyData(TimeFrequencyData& data) {
+        delete[] data.magnitudes;
+        delete[] data.phases;
+        data.magnitudes = nullptr;
+        data.phases = nullptr;
+    }
+
     
     // Debug utility to analyze oscillator state
     void debugOscillators() {
@@ -676,6 +820,34 @@ extern "C" {
     EXPORT_API void UpdateTime(float deltaTime) {
         if (processor) {
             processor->updateTime(deltaTime);
+        }
+    }
+
+    EXPORT_API void GetTimeFrequencyData(
+        int timeSteps,
+        int frequencyBins,
+        float* outputMagnitudes,
+        float* outputPhases,
+        float* outputTimeRange,  // [minTime, maxTime]
+        float* outputFreqRange   // [minFreq, maxFreq]
+    ) {
+        if (processor) {
+            auto tfData = processor->generateTimeFrequencyData(timeSteps, frequencyBins);
+            
+            // Copy magnitude data
+            std::copy(tfData.magnitudes, tfData.magnitudes + (timeSteps * frequencyBins), outputMagnitudes);
+            
+            // Copy phase data
+            std::copy(tfData.phases, tfData.phases + (timeSteps * frequencyBins), outputPhases);
+            
+            // Copy time and frequency ranges
+            outputTimeRange[0] = tfData.minTime;
+            outputTimeRange[1] = tfData.maxTime;
+            outputFreqRange[0] = tfData.minFreq;
+            outputFreqRange[1] = tfData.maxFreq;
+            
+            // Clean up
+            processor->freeTimeFrequencyData(tfData);
         }
     }
     
