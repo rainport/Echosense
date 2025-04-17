@@ -626,7 +626,7 @@ public:
             
             // Calculate frequency bandwidth based on uncertainty principle
             // σf ≈ 1/(2π·σt) - the longer the time envelope, the narrower the frequency spread
-            float freqSpread = 1.0f / (2.0f * M_PI * osc.sigma);
+            float freqSpread = 1.0f / (osc.sigma);
             
             // For each point in the time-frequency grid
             for (int t = 0; t < timeSteps; t++) {

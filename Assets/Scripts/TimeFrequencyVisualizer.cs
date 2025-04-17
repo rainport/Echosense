@@ -313,28 +313,28 @@ public class TimeFrequencyVisualizer : MonoBehaviour
                 }
             }
             
-            // Phase-color legend
-            float legendWidth = 100;
-            float legendHeight = 15;
-            Rect legendRect = new Rect(rect.x, rect.y + rect.height + 20, legendWidth, legendHeight);
+            // // Phase-color legend
+            // float legendWidth = 100;
+            // float legendHeight = 15;
+            // Rect legendRect = new Rect(rect.x, rect.y + rect.height + 20, legendWidth, legendHeight);
             
-            // Draw legend background
-            GUI.DrawTexture(legendRect, Texture2D.whiteTexture, ScaleMode.StretchToFill, true, 0, Color.black, 0, 0);
+            // // Draw legend background
+            // GUI.DrawTexture(legendRect, Texture2D.whiteTexture, ScaleMode.StretchToFill, true, 0, Color.black, 0, 0);
             
-            // Draw phase colors
-            for (int i = 0; i < legendWidth; i++)
-            {
-                float phase = (i / (float)legendWidth) * 2.0f * Mathf.PI;
-                Color color = PhaseToColor(phase, 1.0f); // Full magnitude
+            // // Draw phase colors
+            // for (int i = 0; i < legendWidth; i++)
+            // {
+            //     float phase = (i / (float)legendWidth) * 2.0f * Mathf.PI;
+            //     Color color = PhaseToColor(phase, 1.0f); // Full magnitude
                 
-                Rect colorRect = new Rect(legendRect.x + i, legendRect.y, 1, legendHeight);
-                GUI.DrawTexture(colorRect, Texture2D.whiteTexture, ScaleMode.StretchToFill, true, 0, color, 0, 0);
-            }
+            //     Rect colorRect = new Rect(legendRect.x + i, legendRect.y, 1, legendHeight);
+            //     GUI.DrawTexture(colorRect, Texture2D.whiteTexture, ScaleMode.StretchToFill, true, 0, color, 0, 0);
+            // }
             
-            // Legend labels
-            GUI.Label(new Rect(legendRect.x, legendRect.y + legendHeight, 50, 20), "0", labelStyle);
-            GUI.Label(new Rect(legendRect.x + legendWidth - 20, legendRect.y + legendHeight, 50, 20), "2π", labelStyle);
-            GUI.Label(new Rect(legendRect.x + 40, legendRect.y + legendHeight, 100, 20), "Phase", labelStyle);
+            // // Legend labels
+            // GUI.Label(new Rect(legendRect.x, legendRect.y + legendHeight, 50, 20), "0", labelStyle);
+            // GUI.Label(new Rect(legendRect.x + legendWidth - 20, legendRect.y + legendHeight, 50, 20), "2π", labelStyle);
+            // GUI.Label(new Rect(legendRect.x + 40, legendRect.y + legendHeight, 100, 20), "Phase", labelStyle);
         }
     }
     
