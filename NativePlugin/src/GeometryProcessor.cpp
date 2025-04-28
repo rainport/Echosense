@@ -477,7 +477,7 @@ public:
                 workingPoints.begin() + *outputPointCount,
                 outputPoints);
         
-        printf("Total processed points: %d\n", *outputPointCount);
+        //printf("Total processed points: %d\n", *outputPointCount);
         
         // Map these points to oscillators for continuous sound
         float currentTime = radarParams.currentTime;
@@ -735,20 +735,20 @@ public:
             avgAmp /= activeCount;
         }
         
-        printf("Oscillator stats: %d active, max amp: %.4f, avg amp: %.4f\n", 
-              activeCount, maxAmp, avgAmp);
+        // printf("Oscillator stats: %d active, max amp: %.4f, avg amp: %.4f\n", 
+        //       activeCount, maxAmp, avgAmp);
         
         // Print details of first few active oscillators
-        printf("Active oscillators:\n");
+        // printf("Active oscillators:\n");
         int printCount = std::min(5, activeCount);
         int printed = 0;
         
         for (int i = 0; i < MAX_OSCILLATORS && printed < printCount; i++) {
             if (oscillators[i].active) {
-                printf("  [%d] freq: %.1f Hz, amp: %.4f, pos: (%.2f, %.2f, %.2f)\n",
-                      i, oscillators[i].frequency, oscillators[i].amplitude,
-                      oscillators[i].position[0], oscillators[i].position[1], 
-                      oscillators[i].position[2]);
+                //printf("  [%d] freq: %.1f Hz, amp: %.4f, pos: (%.2f, %.2f, %.2f)\n",
+                //      i, oscillators[i].frequency, oscillators[i].amplitude,
+                //      oscillators[i].position[0], oscillators[i].position[1], 
+                //      oscillators[i].position[2]);
                 printed++;
             }
         }
@@ -769,8 +769,8 @@ public:
         
         avgAmp /= INTERNAL_BUFFER_SIZE;
         
-        printf("Buffer stats - Max amplitude: %.6f, Avg amplitude: %.6f, Non-zero: %d/%d\n", 
-              maxAmp, avgAmp, nonZeroSamples, INTERNAL_BUFFER_SIZE);
+        //printf("Buffer stats - Max amplitude: %.6f, Avg amplitude: %.6f, Non-zero: %d/%d\n", 
+        //      maxAmp, avgAmp, nonZeroSamples, INTERNAL_BUFFER_SIZE);
     }
 };
 
