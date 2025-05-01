@@ -1,8 +1,8 @@
-# Install script for directory: C:/Users/cwp57/Desktop/Echosense/NativePlugin
+# Install script for directory: /Users/jakearaujo-simon/Desktop/Spring 2025 Courses/startup studio/echosense/My project (2)/NativePlugin
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)
-  set(CMAKE_INSTALL_PREFIX "C:/Program Files (x86)/geometry_processor")
+  set(CMAKE_INSTALL_PREFIX "/usr/local")
 endif()
 string(REGEX REPLACE "/$" "" CMAKE_INSTALL_PREFIX "${CMAKE_INSTALL_PREFIX}")
 
@@ -34,13 +34,13 @@ endif()
 
 # Set path to fallback-tool for dependency-resolution.
 if(NOT DEFINED CMAKE_OBJDUMP)
-  set(CMAKE_OBJDUMP "C:/Users/cwp57/Downloads/winlibs-x86_64-posix-seh-gcc-15.1.0-mingw-w64ucrt-12.0.0-r1/mingw64/bin/objdump.exe")
+  set(CMAKE_OBJDUMP "/usr/bin/objdump")
 endif()
 
 string(REPLACE ";" "\n" CMAKE_INSTALL_MANIFEST_CONTENT
        "${CMAKE_INSTALL_MANIFEST_FILES}")
 if(CMAKE_INSTALL_LOCAL_ONLY)
-  file(WRITE "C:/Users/cwp57/Desktop/echosense/NativePlugin/build/install_local_manifest.txt"
+  file(WRITE "/Users/jakearaujo-simon/Desktop/Spring 2025 Courses/startup studio/echosense/My project (2)/NativePlugin/build/install_local_manifest.txt"
      "${CMAKE_INSTALL_MANIFEST_CONTENT}")
 endif()
 if(CMAKE_INSTALL_COMPONENT)
@@ -56,6 +56,6 @@ else()
 endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
-  file(WRITE "C:/Users/cwp57/Desktop/echosense/NativePlugin/build/${CMAKE_INSTALL_MANIFEST}"
+  file(WRITE "/Users/jakearaujo-simon/Desktop/Spring 2025 Courses/startup studio/echosense/My project (2)/NativePlugin/build/${CMAKE_INSTALL_MANIFEST}"
      "${CMAKE_INSTALL_MANIFEST_CONTENT}")
 endif()

@@ -9,103 +9,196 @@
 
 #include <vector>
 #include <cmath>
+#include <cstdint>
+#include <string>
+#include <map>
+#include <algorithm> // Needed for std::min
 
-// Object geometry structure passed from Unity
+// --- KissFFT Includes ---
+#include "kiss_fft.h" // Provides kiss_fft_cpx and kiss_fft_scalar definitions
+
+// Forward declaration for the state struct pointer type is okay
+struct kiss_fftr_state;
+typedef struct kiss_fftr_state* kiss_fftr_cfg;
+
+
+// --- Global Constants ---
+const int MAX_OSCILLATORS = 256;
+
+
+// --- Struct Definitions for the C API ---
 struct ObjectGeometry {
-    float* vertices;      // Array of vertex positions (x,y,z triplets)
-    int* triangles;       // Array of triangle indices
-    float* faceNormals;   // Array of face normal vectors
-    float* faceCenters;   // Array of face center positions
-    float* triangleAreas; // Array of triangle areas
-    int triangleCount;    // Number of triangles
-    float* transform;     // 4x4 world transform matrix
+    int objectId; float* vertices; int* triangles; float* faceNormals;
+    float* faceCenters; float* triangleAreas; int triangleCount; float* transform;
 };
-
-// Radar configuration parameters
-struct RadarParameters {
-    float pulseRepFreq;     // Pulse repetition frequency (Hz)
-    float speedOfSound;     // Speed of sound in medium (m/s)
-    float pulseWidth;       // Width of Gaussian pulse envelope (sigma)
-    float currentTime;      // Current simulation time (s)
-    float lastFrameTime;    // Time of last frame (s)
-    float frameTime;        // Time elapsed since last frame (s)
-};
-
-struct ActiveEcho {
-    float startTime;      // Absolute start time (radarParams.currentTime)
-    float sigma;          // Envelope width
-    float frequency;      // Echo frequency (with Doppler)
-    float amplitude;      // Echo amplitude
-    float targetAmplitude; // Target amplitude to smoothly approach
-    float phase;          // Phase continuity
-    float position[3];    // Position in 3D space
-    bool isActive;        // Whether this echo is still alive
-    
-};
-
-// Audio parameters for each processed point
 struct AudioParameters {
-    float amplitude;        // Base amplitude scaling
-    float baseFreq;         // Base/carrier frequency
-    float dopplerFreq;      // Frequency after Doppler shift
-    float sigma;            // Width of Gaussian pulse envelope
-    float roundTripTime;    // Time for pulse to reach target and return
-    float phase;            // Phase offset
+    float amplitude; float baseFreq; float dopplerFreq; float sigma;
+    float roundTripTime; float phase;
 };
-
-// Output structure for processed points
 struct ProcessedPoint {
-    float position[3];      // World space position
-    float normal[3];        // World space normal
-    float velocity[3];      // World space velocity
-    AudioParameters params;
-    float facingFactor;     // How directly this point faces the listener
-    float area;             // Triangle area for amplitude scaling
+    int objectId; int triangleIndex; float position[3]; float normal[3];
+    float velocity[3]; AudioParameters params; float facingFactor; float area;
+};
+
+// --- Internal Structs (Used only within C++) ---
+struct RadarParameters {
+    float pulseRepFreq; float speedOfSound; float pulseWidth;
+    double currentTime; double lastFrameTime; double frameTime;
+};
+
+// Oscillator struct with inline method definitions
+struct Oscillator {
+    bool active; int objectId; int triangleIndex;
+    float frequency; float targetFrequency; float amplitude; float targetAmplitude;
+    float phase; float position[3]; float normal[3]; float roundTripTime; float sigma;
+
+    // Inline definition for reset
+    inline void reset() {
+        active = false; objectId = -1; triangleIndex = -1; frequency = 0.0f; targetFrequency = 0.0f;
+        amplitude = 0.0f; targetAmplitude = 0.0f; phase = 0.0f; roundTripTime = 0.0f; sigma = 0.05f; // Default sigma
+        position[0] = position[1] = position[2] = 0.0f; normal[0] = normal[1] = normal[2] = 0.0f;
+    }
+
+    // ** Corrected inline definition for update **
+    inline void update(float deltaTime) {
+        if (!active) return; // Do nothing if inactive
+
+        // --- Deactivation Logic ---
+        // Check if the target amplitude is essentially zero
+        if (targetAmplitude < 1e-4f) {
+            // If target is zero, decay amplitude faster to ensure quick deactivation
+            // Adjust the decay factor (e.g., 0.8f, 0.7f) if needed. Smaller values decay faster.
+            amplitude *= 0.8f;
+
+            // If amplitude has decayed enough, reset the oscillator completely
+            if (amplitude < 1e-4f) {
+                // Optional: Log deactivation for debugging
+                // printf("[OSC DEBUG] Oscillator %d:%d deactivated (Target: %.4f, Current: %.4f)\n", objectId, triangleIndex, targetAmplitude, amplitude);
+                reset(); // Call the reset method
+                return;  // Exit early, no need for further smoothing if reset
+            }
+        } else {
+            // --- Smoothing Logic (if target amplitude is non-zero) ---
+            // Smooth amplitude towards the target
+            // Ensure deltaTime is non-negative before using it in std::min
+             float safeDeltaTime = std::max(0.0f, deltaTime);
+             float lerpFactorAmp = std::min(10.0f * safeDeltaTime, 1.0f); // Amplitude smoothing factor
+            amplitude = amplitude * (1.0f - lerpFactorAmp) + targetAmplitude * lerpFactorAmp;
+        }
+
+        // --- Frequency Smoothing (Always smooth if active) ---
+        // Smooth frequency towards the target, regardless of amplitude target
+        // Ensure deltaTime is non-negative before using it in std::min
+        float safeDeltaTime = std::max(0.0f, deltaTime);
+        float lerpFactorFreq = std::min(10.0f * safeDeltaTime, 1.0f); // Can use same or different factor
+        frequency = frequency * (1.0f - lerpFactorFreq) + targetFrequency * lerpFactorFreq;
+    }
 };
 
 
+// --- GeometryProcessor Implementation Class (Internal) ---
+// (Class definition remains the same as in geometry_processor_h_update_4)
+class GeometryProcessorImpl {
+private:
+    // Basic configuration
+    int sampleRate;
+    int blockSize;
+    float currentMaxDistance;
+    // Listener data
+    float listenerPosition[3];
+    float listenerVelocity[3];
+    float listenerForward[3];
+    float listenerUp[3];
+    // Radar/pulse parameters
+    RadarParameters radarParams;
+    // Oscillator bank
+    Oscillator oscillators[MAX_OSCILLATORS]; // Uses the struct defined above
+    std::map<uint64_t, int> activeOscillatorMap;
+    // HRTF and Convolution Data
+    std::string hrtfPath;
+    bool hrtfLoaded = false;
+    struct MYSOFA_HRTF* hrtfData = nullptr;
+    int hrirLength = 0;
+    int hrtfMeasurements = 0;
+    int hrtfSampleRate = 0;
+    // KissFFT configurations
+    kiss_fftr_cfg fftConfig = nullptr;
+    kiss_fftr_cfg ifftConfig = nullptr;
+    int fftSize = 0;
+    int fftComplexSize = 0;
+    // Buffers
+    std::vector<kiss_fft_scalar> fftRealBuffer;
+    std::vector<kiss_fft_cpx> fftCpxBuffer;
+    std::vector<kiss_fft_cpx> fftCpxBuffer2;
+    std::vector<std::vector<kiss_fft_cpx>> cachedLeftHrirFfts;
+    std::vector<std::vector<kiss_fft_cpx>> cachedRightHrirFfts;
+    std::vector<kiss_fft_scalar> overlapLeft;
+    std::vector<kiss_fft_scalar> overlapRight;
+    std::vector<kiss_fft_scalar> currentHrirLeft;
+    std::vector<kiss_fft_scalar> currentHrirRight;
+    std::vector<kiss_fft_scalar> monoBlockBuffer;
+    // Working memory
+    std::vector<ProcessedPoint> workingPoints;
+    // Private Helper Methods (Declarations)
+    float dot(const float* a, const float* b);
+    float length(const float* v);
+    float distSq(const float* a, const float* b);
+    void normalize(float* v);
+    void subtract(const float* a, const float* b, float* result);
+    void cross(const float* a, const float* b, float* result);
+    void transformPoint(const float* point, const float* matrix, float* result);
+    void transformNormal(const float* normal, const float* matrix, float* result);
+    uint64_t getOscillatorKey(int objectId, int triangleIndex);
+    void calculateRelativeAzimuthElevation(const float* pointPosition, float& azimuth, float& elevation);
+    int findNearestHrirIndex(float targetAzimuth, float targetElevation);
+    bool precomputeHrirFfts();
+    AudioParameters computeAudioParams(const ProcessedPoint& point);
+    void assignPointsToOscillators(const ProcessedPoint* points, int pointCount, int maxOutputPoints);
+    void cleanupResources();
+public:
+    // Constructor & Destructor
+    GeometryProcessorImpl();
+    ~GeometryProcessorImpl();
+    // Public Interface Methods (Declarations)
+    void initialize(int sr, int block);
+    void setHrtfPath(const char* sofaFilePath);
+    void setListenerOrientation(const float* forward, const float* up);
+    void updateTime(float deltaTime);
+    void setRadarParameters(float pulseRepFreq, float speedOfSound, float pulseWidth);
+    void processGeometry(const ObjectGeometry* objects, int objectCount,
+                         const float* listenerPos, const float* listenerFwdIgnored,
+                         float maxDist, float reflectionRadius,
+                         ProcessedPoint* outputPoints, int outputBufferSize, int* outputPointCount);
+    void synthesizeAudio(const ProcessedPoint* pointsIgnored, int pointCountIgnored,
+                         float* outputBuffer, int channelCount, int samplesPerChannel);
+    void generateTimeFrequencyData(int timeSteps, int frequencyBins, float* mags, float* phases, float* timeRng, float* freqRng);
+    void debugOscillators();
+    void cleanup();
+};
+
+// --- C API Function Declarations ---
+// (Keep these exactly as they were)
 extern "C" {
-    // Initialize the processor with audio configuration
     EXPORT_API void InitializeProcessor(int sampleRate, int blockSize);
-    
-    // Update simulation time (call each frame)
+    EXPORT_API void SetHrtfPath(const char* sofaFilePath);
+    EXPORT_API void SetListenerOrientation(const float* listenerForward, const float* listenerUp);
     EXPORT_API void UpdateTime(float deltaTime);
-    
-    // Set radar parameters
     EXPORT_API void SetRadarParameters(float pulseRepFreq, float speedOfSound, float pulseWidth);
-    
-    // Process geometry to find reflection points
     EXPORT_API void ProcessObjectGeometry(
-        const ObjectGeometry* objects,
-        int objectCount,
-        const float* listenerPosition,
-        const float* listenerForward,
-        float maxDistance,
-        float reflectionRadius,
-        ProcessedPoint* outputPoints,
-        int* outputPointCount
+        const ObjectGeometry* objects, int objectCount, const float* listenerPosition,
+        const float* listenerForward, float maxDistance, float reflectionRadius,
+        ProcessedPoint* outputPoints, int* outputPointCount
     );
-    
-    // Generate audio from processed points
     EXPORT_API void SynthesizeAudio(
-        const ProcessedPoint* points,     // Array of processed points
-        int pointCount,                   // Number of points
-        float* outputBuffer,              // Audio output buffer
-        int bufferSize                    // Size of output buffer
+        const ProcessedPoint* points, int pointCount, float* outputBuffer,
+        int channelCount, int samplesPerChannel
     );
-
     EXPORT_API void GetTimeFrequencyData(
-        int timeSteps,          // Number of time steps
-        int frequencyBins,      // Number of frequency bins
-        float* outputMagnitudes, // Output buffer for magnitude data (timeSteps * frequencyBins floats)
-        float* outputPhases,     // Output buffer for phase data (timeSteps * frequencyBins floats)
-        float* outputTimeRange,  // [minTime, maxTime] (2 floats)
-        float* outputFreqRange   // [minFreq, maxFreq] (2 floats)
+        int timeSteps, int frequencyBins, float* outputMagnitudes, float* outputPhases,
+        float* outputTimeRange, float* outputFreqRange
     );
-    
-    // Debug functions
     EXPORT_API void DebugOscillators();
-    EXPORT_API void DebugBuffer();
-    
+    EXPORT_API void DebugBuffer(); // Deprecated
     EXPORT_API void Cleanup();
-};
+}; // extern "C"
+
