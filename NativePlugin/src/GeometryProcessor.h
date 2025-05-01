@@ -31,6 +31,10 @@ struct ObjectGeometry {
     int objectId; float* vertices; int* triangles; float* faceNormals;
     float* faceCenters; float* triangleAreas; int triangleCount; float* transform;
 };
+struct ReferencePoint {
+  float position[3];
+  float normal[3];
+};
 struct AudioParameters {
     float amplitude; float baseFreq; float dopplerFreq; float sigma;
     float roundTripTime; float phase;
@@ -169,6 +173,9 @@ public:
                          const float* listenerPos, const float* listenerFwdIgnored,
                          float maxDist, float reflectionRadius,
                          ProcessedPoint* outputPoints, int outputBufferSize, int* outputPointCount);
+    void processReferencePoints(const ReferencePoint* refs, int refCount,
+                         const float* listenerPos, float maxDist,
+                         ProcessedPoint* outputPoints, int outputBufferSize, int* outputPointCount);
     void synthesizeAudio(const ProcessedPoint* pointsIgnored, int pointCountIgnored,
                          float* outputBuffer, int channelCount, int samplesPerChannel);
     void generateTimeFrequencyData(int timeSteps, int frequencyBins, float* mags, float* phases, float* timeRng, float* freqRng);
@@ -197,6 +204,14 @@ extern "C" {
         int timeSteps, int frequencyBins, float* outputMagnitudes, float* outputPhases,
         float* outputTimeRange, float* outputFreqRange
     );
+    EXPORT_API void ProcessReferencePoints(
+        const ReferencePoint* points, int pointCount,
+        const float* listenerPosition,
+        float maxDistance,
+        ProcessedPoint* outputPoints,
+        int outputBufferSize,
+        int* outputPointCount
+  );
     EXPORT_API void DebugOscillators();
     EXPORT_API void DebugBuffer(); // Deprecated
     EXPORT_API void Cleanup();

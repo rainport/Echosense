@@ -1,4 +1,4 @@
-#include "GeometryProcessor.h" // Includes updated class definition from geometry_processor_h_update_4
+﻿#include "GeometryProcessor.h" // Includes updated class definition from geometry_processor_h_update_4
 #include <algorithm>
 #include <cmath>
 #include <string>
@@ -216,6 +216,7 @@ bool GeometryProcessorImpl::precomputeHrirFfts() {
 
 // Initialize or re-initialize the processor
 void GeometryProcessorImpl::initialize(int sr, int block) {
+    LOG_WARN("Hello, anyone there?");
     LOG_INFO("Initializing GeometryProcessor: SR=%d, BlockSize=%d", sr, block);
     // Cleanup if already initialized
     if (hrtfLoaded || fftConfig || ifftConfig || hrtfData) {
@@ -329,6 +330,7 @@ void GeometryProcessorImpl::setHrtfPath(const char* sofaFilePath) {
 
 // Set listener orientation vectors
 void GeometryProcessorImpl::setListenerOrientation(const float* forward, const float* up) {
+    LOG_WARN("Setting listener orientation");
     if (forward) std::copy(forward, forward + 3, listenerForward);
     if (up) std::copy(up, up + 3, listenerUp);
     // Ensure vectors are normalized
@@ -338,6 +340,7 @@ void GeometryProcessorImpl::setListenerOrientation(const float* forward, const f
 
 // Update internal simulation time
 void GeometryProcessorImpl::updateTime(float deltaTime) {
+    LOG_WARN("Updating time");
     // Prevent negative or excessively large delta times which might cause issues
     deltaTime = std::max(0.0f, std::min(deltaTime, 0.1f)); // Clamp delta time e.g., 0 to 100ms
     radarParams.lastFrameTime = radarParams.currentTime;
@@ -359,6 +362,7 @@ void GeometryProcessorImpl::processGeometry(const ObjectGeometry* objects, int o
                 float maxDist, float reflectionRadius,
                 ProcessedPoint* outputPoints, int outputBufferSize, int* outputPointCount)
 {
+    LOG_WARN("Processing geometry");
     // Validate input pointers and buffer size
     if (!outputPoints || !outputPointCount || outputBufferSize <= 0) {
         LOG_ERROR("Invalid output parameters in processGeometry (outputPoints=%p, outputPointCount=%p, bufferSize=%d).",
@@ -452,6 +456,55 @@ void GeometryProcessorImpl::processGeometry(const ObjectGeometry* objects, int o
     }
     *outputPointCount = numPointsToCopy; // Set the actual number of points written
 }
+
+void GeometryProcessorImpl::processReferencePoints(
+      const ReferencePoint* refs, int refCount,
+      const float* listenerPos, float maxDist,
+      ProcessedPoint* outputPoints,
+      int outputBufferSize,
+      int* outputPointCount)
+{
+  workingPoints.clear();
+  *outputPointCount = 0;
+  // for each hit‐point:
+  for (int i = 0; i < refCount; ++i) {
+    // 1) distance filter
+    float dx = refs[i].position[0] - listenerPos[0];
+    float dy = refs[i].position[1] - listenerPos[1];
+    float dz = refs[i].position[2] - listenerPos[2];
+
+    // 2) compute direction from point → listener and normalize
+    float dir[3] = { -dx, -dy, -dz };
+    float invLen = 1.0f / std::sqrt(dir[0]*dir[0] + dir[1]*dir[1] + dir[2]*dir[2]);
+    dir[0] *= invLen;
+    dir[1] *= invLen;
+    dir[2] *= invLen;
+
+    // 3) facing factor = max(0, dot(normal, dir))
+    float facing = refs[i].normal[0] * dir[0]
+                 + refs[i].normal[1] * dir[1]
+                 + refs[i].normal[2] * dir[2];
+    facing = std::max(0.0f, facing);
+    // build ProcessedPoint
+    ProcessedPoint p;
+    p.objectId      = i;
+    p.triangleIndex = 0;
+    std::copy(refs[i].position, refs[i].position+3, p.position);
+    std::copy(refs[i].normal,   refs[i].normal+3,   p.normal);
+    p.velocity[0]=p.velocity[1]=p.velocity[2]=0;
+    p.facingFactor = facing;
+    p.area         = 1.0f;             // no more triangleAreas
+    p.params       = computeAudioParams(p);
+    workingPoints.push_back(p);
+  }
+  // then assign to oscillators & copy into outputPoints
+  assignPointsToOscillators(workingPoints.data(), workingPoints.size(), outputBufferSize);
+  int n = (int)workingPoints.size();
+  std::copy(workingPoints.begin(), workingPoints.end(), outputPoints);
+  *outputPointCount = n;
+  printf("The number of points is " + n);
+}
+
 
 // Assign detected points to oscillators, managing activation/deactivation
 void GeometryProcessorImpl::assignPointsToOscillators(const ProcessedPoint* points, int pointCount, int maxOutputPoints) {
@@ -872,6 +925,8 @@ void GeometryProcessorImpl::synthesizeAudio(const ProcessedPoint* pointsIgnored,
         }
     } // End loop over oscillators
 
+    LOG_WARN("Finished looping over oscillators");
+
     // --- Final Limiter ---
     float maxAmp = 0.0f;
     for(int i=0; i < bufferSize; ++i) { maxAmp = std::max(maxAmp, std::abs(outputBuffer[i])); }
@@ -1038,6 +1093,24 @@ extern "C" {
         // Pass this assumed size to the implementation function for safety checks
         const int assumedBufferSize = MAX_OSCILLATORS;
         processorInstance->processGeometry(objects, objectCount, listenerPosition, listenerForward, maxDistance, reflectionRadius, outputPoints, assumedBufferSize, outputPointCount);
+    }
+
+    EXPORT_API void ProcessReferencePoints(const ReferencePoint* points, int pointCount,
+                            const float* listenerPos,
+                            float maxDist,
+                            ProcessedPoint* outputPoints,
+                            int outputBufferSize,
+                            int* outputPointCount) {
+        // C API Wrapper: Validate pointers and pass buffer size assumption
+        if (!outputPointCount) { LOG_ERROR("ProcessObjectGeometry: outputPointCount is NULL."); return; }
+        *outputPointCount = 0; // Default to zero points
+        if (!processorInstance) { LOG_WARN("ProcessObjectGeometry: Processor not initialized."); return; }
+        if (!outputPoints) { LOG_ERROR("ProcessObjectGeometry: outputPoints is NULL."); return; }
+
+        processorInstance->processReferencePoints(points, pointCount,
+                                         listenerPos, maxDist,
+                                         outputPoints, outputBufferSize,
+                                         outputPointCount);
     }
 
     EXPORT_API void SynthesizeAudio(const ProcessedPoint* points, int pointCount, float* outputBuffer, int channelCount, int samplesPerChannel) {

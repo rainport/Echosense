@@ -2,7 +2,9 @@ using UnityEngine;
 using System.Runtime.InteropServices;
 using System.Collections.Generic;
 using System;
-using System.IO; // Required for Path.Combine
+using System.IO;
+using Enumerable = System.Linq.Enumerable;
+using Random = UnityEngine.Random; // Required for Path.Combine
 
 public class GeometryProcessor : MonoBehaviour
 {
@@ -12,6 +14,13 @@ public class GeometryProcessor : MonoBehaviour
     private struct ObjectGeometry {
         public int objectId; public IntPtr vertices; public IntPtr triangles; public IntPtr faceNormals;
         public IntPtr faceCenters; public IntPtr triangleAreas; public int triangleCount; public IntPtr transform;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ReferencePoint {
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 3)]
+        public float[] position;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 3)]
+        public float[] normal;
     }
     [StructLayout(LayoutKind.Sequential)]
     private struct AudioParameters {
@@ -29,17 +38,29 @@ public class GeometryProcessor : MonoBehaviour
 
     // --- Native plugin function imports ---
     private const string PluginName = "geometry_processor";
-    [DllImport(PluginName)] private static extern void InitializeProcessor(int sampleRate, int blockSize);
-    [DllImport(PluginName)] private static extern void SetHrtfPath(string sofaFilePath);
-    [DllImport(PluginName)] private static extern void SetListenerOrientation([In] float[] listenerForward, [In] float[] listenerUp);
-    [DllImport(PluginName)] private static extern void UpdateTime(float deltaTime);
-    [DllImport(PluginName)] private static extern void SetRadarParameters(float pulseRepFreq, float speedOfSound, float pulseWidth);
-    [DllImport(PluginName)] private static extern void DebugOscillators();
-    [DllImport(PluginName)] private static extern void ProcessObjectGeometry(
+    [DllImport(PluginName, CallingConvention = CallingConvention.Cdecl)] private static extern void InitializeProcessor(int sampleRate, int blockSize);
+    [DllImport(PluginName, CallingConvention = CallingConvention.Cdecl)] private static extern void SetHrtfPath(string sofaFilePath);
+    [DllImport(PluginName, CallingConvention = CallingConvention.Cdecl)] private static extern void SetListenerOrientation([In] float[] listenerForward, [In] float[] listenerUp);
+    [DllImport(PluginName, CallingConvention = CallingConvention.Cdecl)] private static extern void UpdateTime(float deltaTime);
+    [DllImport(PluginName, CallingConvention = CallingConvention.Cdecl)] private static extern void SetRadarParameters(float pulseRepFreq, float speedOfSound, float pulseWidth);
+    [DllImport(PluginName, CallingConvention = CallingConvention.Cdecl)] private static extern void DebugOscillators();
+    [DllImport(PluginName, CallingConvention = CallingConvention.Cdecl)] private static extern void ProcessObjectGeometry(
         [In, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 1)] ObjectGeometry[] objects, int objectCount,
         [In] float[] listenerPosition, [In] float[] listenerForward, float maxDistance, float reflectionRadius,
         [Out, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 7)] ProcessedPoint[] outputPoints, ref int outputPointCount // SizeParamIndex = 7
     );
+    [DllImport(PluginName, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void ProcessReferencePoints(
+        [In,  MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 1)]
+        ReferencePoint[] points, int pointCount,
+        [In] float[] listenerPosition,
+        float maxDistance,
+        [Out, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 5)] 
+        ProcessedPoint[] outputPoints,
+        int outputBufferSize, 
+        ref int outputPointCount
+    );
+
     [DllImport(PluginName)] private static extern void SynthesizeAudio(
         [In, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 1)] ProcessedPoint[] points, int pointCount,
         [Out] float[] outputBuffer, int channelCount, int samplesPerChannel
@@ -81,6 +102,10 @@ public class GeometryProcessor : MonoBehaviour
     private float[] listenerUpArray = new float[3];
     private float[] listenerPositionArray = new float[3];
     private float lastPulseRepFreq, lastSigma, lastSpeedOfSound;
+    
+    [Range(0f, 2f)]
+    [Tooltip("Overall gain for all echo audio. 1 = unity, >1 = louder, <1 = quieter")]
+    public float masterVolume = 1f;
 
     // ** NEW: Store the actual count of valid points from C++ **
     private int currentValidPointCount = 0;
@@ -130,39 +155,64 @@ public class GeometryProcessor : MonoBehaviour
 
         audioStarted = false; nextSchedTime = AudioSettings.dspTime + 0.1; timeToGenerateNextBuffer = Time.time;
     }
+    
+    [SerializeField] private float geometryUpdateThreshold = 0.5f;
+    private Vector3 lastGeometryUpdatePosition;
+    private ObjectGeometry[] cachedGeometryArray;
 
+    private float numRays = 128;
+    private float verticalBias = 0.8f;
+    
     void Update()
     {
         if (!mainCamera) return;
 
-        if (Input.GetKeyDown(KeyCode.F1)) { showDebugVisualization = !showDebugVisualization; }
-        if (Input.GetKeyDown(KeyCode.F2)) { Debug.Log("Debugging oscillator states (Native Plugin):"); DebugOscillators(); }
-
         UpdateTime(Time.deltaTime);
-        Vector3 camPos = mainCamera.transform.position; Vector3 camFwd = mainCamera.transform.forward; Vector3 camUp = mainCamera.transform.up;
+        Vector3 camPos = mainCamera.transform.position;
+        Vector3 camFwd = mainCamera.transform.forward;
+        Vector3 camUp = mainCamera.transform.up;
+
         listenerPositionArray[0] = camPos.x; listenerPositionArray[1] = camPos.y; listenerPositionArray[2] = camPos.z;
         listenerForwardArray[0] = camFwd.x; listenerForwardArray[1] = camFwd.y; listenerForwardArray[2] = camFwd.z;
         listenerUpArray[0] = camUp.x; listenerUpArray[1] = camUp.y; listenerUpArray[2] = camUp.z;
         SetListenerOrientation(listenerForwardArray, listenerUpArray);
 
-        if (!Mathf.Approximately(pulseRepFreq, lastPulseRepFreq) || !Mathf.Approximately(sigma, lastSigma) || !Mathf.Approximately(speedOfSound, lastSpeedOfSound)) {
-            float clampedSigma = Mathf.Max(0.001f, sigma);
-            SetRadarParameters(pulseRepFreq, speedOfSound, clampedSigma);
-            lastPulseRepFreq = pulseRepFreq; lastSigma = clampedSigma; lastSpeedOfSound = speedOfSound;
-        }
-
-        if (Time.time >= timeToGenerateNextBuffer) {
-            FindNearbyMeshes();
-            if (nearbyMeshes.Length == 0) { SynthesizeEmptyAudio(); }
-            else { ProcessGeometryAndSynthesize(); } // This now updates currentValidPointCount
+        if (Time.time >= timeToGenerateNextBuffer)
+        {
+            List<ReferencePoint> refs = new List<ReferencePoint>();
+            for (int i = 0; i < numRays; i++) {
+                Vector3 dir = Random.onUnitSphere;
+                dir.y *= verticalBias;
+                dir.Normalize();
+                if (Physics.Raycast(camPos, dir, out var hit, maxDistance, objectLayers)) {
+                    refs.Add(new ReferencePoint {
+                        position = new[]{ hit.point.x, hit.point.y, hit.point.z },
+                        normal   = new[]{ hit.normal.x, hit.normal.y, hit.normal.z }
+                    });
+                }
+            }
+            // pin refs into a ReferencePoint[] and call:
+            currentValidPointCount = refs.Count;
+            Debug.Log("Detected " + currentValidPointCount + " reference points.");
+            var refsArray = refs.ToArray();
+            ProcessReferencePoints(refsArray, currentValidPointCount,
+                listenerPositionArray,
+                maxDistance,
+                processedPoints, 128, ref currentValidPointCount);
 
             AudioClip clipToUpdate = nextClipIsA ? clipA : clipB;
             clipToUpdate.SetData(audioBuffer, 0);
 
-            if (!audioStarted) {
-                audioSource.clip = clipToUpdate; audioSource.PlayScheduled(nextSchedTime); audioStarted = true;
-            } else {
-                 audioSource.SetScheduledEndTime(nextSchedTime); audioSource.PlayScheduled(nextSchedTime);
+            if (!audioStarted)
+            {
+                audioSource.clip = clipToUpdate;
+                audioSource.PlayScheduled(nextSchedTime);
+                audioStarted = true;
+            }
+            else
+            {
+                audioSource.SetScheduledEndTime(nextSchedTime);
+                audioSource.PlayScheduled(nextSchedTime);
             }
 
             nextClipIsA = !nextClipIsA;
@@ -171,8 +221,9 @@ public class GeometryProcessor : MonoBehaviour
             timeToGenerateNextBuffer = Time.time + Mathf.Max(0, (float)(nextSchedTime - AudioSettings.dspTime) - generationLeadTime);
         }
 
-        if (showDebugVisualization) {
-            VisualizeEchoPoints(); // This will now use currentValidPointCount
+        if (showDebugVisualization)
+        {
+            VisualizeEchoPoints();
         }
     }
 
@@ -182,7 +233,11 @@ public class GeometryProcessor : MonoBehaviour
          foreach (var collider in nearbyColliders) {
              if (!collider.gameObject.activeInHierarchy) continue;
              var meshFilter = collider.GetComponent<MeshFilter>();
-             if (meshFilter?.sharedMesh != null && meshFilter.sharedMesh.isReadable) { meshFilters.Add(meshFilter); }
+             // If there is no mesh filter on that collider, ignore it
+             if (meshFilter != null)
+             {
+                 if (meshFilter?.sharedMesh != null && meshFilter.sharedMesh.isReadable) { meshFilters.Add(meshFilter); }
+             }
          }
          nearbyMeshes = meshFilters.ToArray();
     }
@@ -200,7 +255,7 @@ public class GeometryProcessor : MonoBehaviour
          SynthesizeAudio(processedPoints, 0, audioBuffer, 2, blockSize);
     }
 
-    private void ProcessGeometryAndSynthesize()
+    private void ProcessGeometryCache()
     {
         foreach (var handle in pinnedArrays) { if (handle.IsAllocated) handle.Free(); }
         pinnedArrays.Clear();
@@ -243,32 +298,43 @@ public class GeometryProcessor : MonoBehaviour
             pinnedArrays.AddRange(tempHandles);
         }
 
-        ObjectGeometry[] geometriesArray = geometries.ToArray();
-        if (geometriesArray.Length == 0) { SynthesizeEmptyAudio(); return; }
+        cachedGeometryArray = geometries.ToArray();
+        lastGeometryUpdatePosition = mainCamera.transform.position;
+    }
 
-        // ** Store the returned point count **
-        currentValidPointCount = 0; // Reset before call
-        // Ensure buffer exists and is correct size
+    private void ProcessAndSynthesizeFromCache()
+    {
+        if (cachedGeometryArray == null || cachedGeometryArray.Length == 0) {
+            SynthesizeEmptyAudio();
+            return;
+        }
+
+        currentValidPointCount = 0;
         if (processedPoints == null || processedPoints.Length != maxOutputPoints) {
-             processedPoints = new ProcessedPoint[maxOutputPoints];
-             // Initialize sub-arrays
-             for (int i = 0; i < processedPoints.Length; i++) {
-                 processedPoints[i].position = new float[3]; processedPoints[i].normal = new float[3]; processedPoints[i].velocity = new float[3];
-             }
+            processedPoints = new ProcessedPoint[maxOutputPoints];
+            for (int i = 0; i < processedPoints.Length; i++) {
+                processedPoints[i].position = new float[3]; processedPoints[i].normal = new float[3]; processedPoints[i].velocity = new float[3];
+            }
         }
 
         try {
             ProcessObjectGeometry(
-                geometriesArray, geometriesArray.Length, listenerPositionArray, listenerForwardArray,
-                maxDistance, reflectionRadius, processedPoints, ref currentValidPointCount // Pass ref
+                cachedGeometryArray, cachedGeometryArray.Length, listenerPositionArray, listenerForwardArray,
+                maxDistance, reflectionRadius, processedPoints, ref currentValidPointCount
             );
-        } catch (Exception e) { Debug.LogError($"Error calling ProcessObjectGeometry: {e.Message}\n{e.StackTrace}"); currentValidPointCount = 0; }
+        } catch (Exception e) {
+            Debug.LogError($"Error calling ProcessObjectGeometry: {e.Message}\n{e.StackTrace}");
+            currentValidPointCount = 0;
+        }
 
-        // Clamp count just in case C++ returns something unexpected
         currentValidPointCount = Mathf.Clamp(currentValidPointCount, 0, maxOutputPoints);
 
-        try { SynthesizeAudio(processedPoints, currentValidPointCount, audioBuffer, 2, blockSize); } // Pass count (though C++ ignores it)
-        catch (Exception e) { Debug.LogError($"Error calling SynthesizeAudio: {e.Message}\n{e.StackTrace}"); Array.Clear(audioBuffer, 0, audioBuffer.Length); }
+        try {
+            SynthesizeAudio(processedPoints, currentValidPointCount, audioBuffer, 2, blockSize);
+        } catch (Exception e) {
+            Debug.LogError($"Error calling SynthesizeAudio: {e.Message}\n{e.StackTrace}");
+            Array.Clear(audioBuffer, 0, audioBuffer.Length);
+        }
     }
 
     private float[] FlattenVector3Array(Vector3[] vectors) {
