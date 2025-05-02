@@ -109,10 +109,36 @@ public class GeometryProcessor : MonoBehaviour
 
     // ** NEW: Store the actual count of valid points from C++ **
     private int currentValidPointCount = 0;
-
+    private List<Vector3> fixedDirs;
+    private int numRays = 64;
+    private ReferencePoint[] refsArray;
 
     void Start()
     {
+        refsArray = new ReferencePoint[numRays];
+        // Precompute a deterministic, evenly-distributed set of directions:
+        fixedDirs = new List<Vector3>(numRays);
+        float phi = (1 + Mathf.Sqrt(5)) / 2;                   // golden ratio
+        float twoPiPhi = 2 * Mathf.PI * phi;
+        for (int i = 0; i < numRays; i++)
+        {
+            float t = (float)i / numRays;
+            float inclination = Mathf.Acos(1 - 2 * t);
+            float azimuth     = twoPiPhi * i;
+
+            // Spherical → Cartesian
+            float x = Mathf.Sin(inclination) * Mathf.Cos(azimuth);
+            float y = Mathf.Sin(inclination) * Mathf.Sin(azimuth);
+            float z = Mathf.Cos(inclination);
+
+            // apply your horizontal bias:
+            Vector3 dir = new Vector3(x, y, z);
+            dir.y *= verticalBias;
+            dir.Normalize();
+
+            fixedDirs.Add(dir);
+        }
+        
         mainCamera = Camera.main;
         if (!mainCamera) { Debug.LogError("Main Camera not found!"); enabled = false; return; }
 
@@ -160,8 +186,8 @@ public class GeometryProcessor : MonoBehaviour
     private Vector3 lastGeometryUpdatePosition;
     private ObjectGeometry[] cachedGeometryArray;
 
-    private float numRays = 128;
-    private float verticalBias = 0.8f;
+    
+    private float verticalBias = 0.05f;
     
     void Update()
     {
@@ -179,26 +205,23 @@ public class GeometryProcessor : MonoBehaviour
 
         if (Time.time >= timeToGenerateNextBuffer)
         {
-            List<ReferencePoint> refs = new List<ReferencePoint>();
-            for (int i = 0; i < numRays; i++) {
-                Vector3 dir = Random.onUnitSphere;
-                dir.y *= verticalBias;
-                dir.Normalize();
-                if (Physics.Raycast(camPos, dir, out var hit, maxDistance, objectLayers)) {
-                    refs.Add(new ReferencePoint {
-                        position = new[]{ hit.point.x, hit.point.y, hit.point.z },
-                        normal   = new[]{ hit.normal.x, hit.normal.y, hit.normal.z }
-                    });
+            // Raycast along each fixed direction:
+            currentValidPointCount = 0;
+            foreach (var dir in fixedDirs)
+            {
+                if (Physics.Raycast(camPos, dir, out var hit, maxDistance, objectLayers))
+                {
+                    refsArray[currentValidPointCount++] = new ReferencePoint {
+                        position = new[] { hit.point.x,  hit.point.y,  hit.point.z },
+                        normal   = new[] { hit.normal.x, hit.normal.y, hit.normal.z }
+                    };
                 }
             }
             // pin refs into a ReferencePoint[] and call:
-            currentValidPointCount = refs.Count;
-            Debug.Log("Detected " + currentValidPointCount + " reference points.");
-            var refsArray = refs.ToArray();
             ProcessReferencePoints(refsArray, currentValidPointCount,
                 listenerPositionArray,
                 maxDistance,
-                processedPoints, 128, ref currentValidPointCount);
+                processedPoints, numRays, ref currentValidPointCount);
 
             AudioClip clipToUpdate = nextClipIsA ? clipA : clipB;
             clipToUpdate.SetData(audioBuffer, 0);
@@ -219,27 +242,13 @@ public class GeometryProcessor : MonoBehaviour
             nextSchedTime += (double)blockSize / sampleRate;
             float generationLeadTime = 0.02f;
             timeToGenerateNextBuffer = Time.time + Mathf.Max(0, (float)(nextSchedTime - AudioSettings.dspTime) - generationLeadTime);
+            SynthesizeAudio(processedPoints, 0, audioBuffer, 2, blockSize);
         }
 
         if (showDebugVisualization)
         {
             VisualizeEchoPoints();
         }
-    }
-
-    private void FindNearbyMeshes() {
-         Collider[] nearbyColliders = Physics.OverlapSphere(mainCamera.transform.position, maxDistance, objectLayers);
-         var meshFilters = new List<MeshFilter>();
-         foreach (var collider in nearbyColliders) {
-             if (!collider.gameObject.activeInHierarchy) continue;
-             var meshFilter = collider.GetComponent<MeshFilter>();
-             // If there is no mesh filter on that collider, ignore it
-             if (meshFilter != null)
-             {
-                 if (meshFilter?.sharedMesh != null && meshFilter.sharedMesh.isReadable) { meshFilters.Add(meshFilter); }
-             }
-         }
-         nearbyMeshes = meshFilters.ToArray();
     }
 
     private void SynthesizeEmptyAudio() {
@@ -253,94 +262,6 @@ public class GeometryProcessor : MonoBehaviour
              }
          }
          SynthesizeAudio(processedPoints, 0, audioBuffer, 2, blockSize);
-    }
-
-    private void ProcessGeometryCache()
-    {
-        foreach (var handle in pinnedArrays) { if (handle.IsAllocated) handle.Free(); }
-        pinnedArrays.Clear();
-        var geometries = new List<ObjectGeometry>();
-        var tempHandles = new List<GCHandle>();
-
-        for (int i = 0; i < nearbyMeshes.Length; i++) {
-            var meshFilter = nearbyMeshes[i]; var mesh = meshFilter.sharedMesh; var transform = meshFilter.transform;
-            if (mesh == null || !mesh.isReadable) continue;
-            var vertices = mesh.vertices; var triangles = mesh.triangles;
-            if (triangles.Length == 0 || triangles.Length % 3 != 0) continue;
-
-            int numTriangles = triangles.Length / 3;
-            var faceNormals = new Vector3[numTriangles]; var faceCenters = new Vector3[numTriangles]; var triangleAreas = new float[numTriangles];
-            bool meshProcessedSuccessfully = true;
-            try {
-                for (int f = 0; f < numTriangles; ++f) {
-                    int idx0 = triangles[f*3], idx1 = triangles[f*3+1], idx2 = triangles[f*3+2];
-                    if (idx0<0 || idx0>=vertices.Length || idx1<0 || idx1>=vertices.Length || idx2<0 || idx2>=vertices.Length) { meshProcessedSuccessfully = false; break; }
-                    Vector3 v1=vertices[idx0], v2=vertices[idx1], v3=vertices[idx2]; Vector3 edge1=v2-v1, edge2=v3-v1; Vector3 crossP=Vector3.Cross(edge1, edge2);
-                    faceNormals[f] = crossP.normalized; faceCenters[f] = (v1+v2+v3)/3f; triangleAreas[f] = 0.5f * crossP.magnitude;
-                }
-            } catch (Exception e) { Debug.LogError($"Error processing mesh {meshFilter.gameObject.name}: {e.Message}", meshFilter.gameObject); meshProcessedSuccessfully = false; }
-            if (!meshProcessedSuccessfully) continue;
-
-            tempHandles.Clear();
-            float[] vFlat=FlattenVector3Array(vertices); float[] nFlat=FlattenVector3Array(faceNormals); float[] cFlat=FlattenVector3Array(faceCenters);
-            var vH = GCHandle.Alloc(vFlat, GCHandleType.Pinned); tempHandles.Add(vH); var tH = GCHandle.Alloc(triangles, GCHandleType.Pinned); tempHandles.Add(tH);
-            var nH = GCHandle.Alloc(nFlat, GCHandleType.Pinned); tempHandles.Add(nH); var cH = GCHandle.Alloc(cFlat, GCHandleType.Pinned); tempHandles.Add(cH);
-            var aH = GCHandle.Alloc(triangleAreas, GCHandleType.Pinned); tempHandles.Add(aH);
-            var matrix = transform.localToWorldMatrix; var matrixArray = new float[16];
-            for(int r=0;r<4;++r) for(int c=0;c<4;++c) matrixArray[r+c*4]=matrix[r,c];
-            var mH = GCHandle.Alloc(matrixArray, GCHandleType.Pinned); tempHandles.Add(mH);
-
-            geometries.Add(new ObjectGeometry {
-                objectId = meshFilter.gameObject.GetInstanceID(), vertices = vH.AddrOfPinnedObject(), triangles = tH.AddrOfPinnedObject(),
-                faceNormals = nH.AddrOfPinnedObject(), faceCenters = cH.AddrOfPinnedObject(), triangleAreas = aH.AddrOfPinnedObject(),
-                triangleCount = numTriangles, transform = mH.AddrOfPinnedObject()
-            });
-            pinnedArrays.AddRange(tempHandles);
-        }
-
-        cachedGeometryArray = geometries.ToArray();
-        lastGeometryUpdatePosition = mainCamera.transform.position;
-    }
-
-    private void ProcessAndSynthesizeFromCache()
-    {
-        if (cachedGeometryArray == null || cachedGeometryArray.Length == 0) {
-            SynthesizeEmptyAudio();
-            return;
-        }
-
-        currentValidPointCount = 0;
-        if (processedPoints == null || processedPoints.Length != maxOutputPoints) {
-            processedPoints = new ProcessedPoint[maxOutputPoints];
-            for (int i = 0; i < processedPoints.Length; i++) {
-                processedPoints[i].position = new float[3]; processedPoints[i].normal = new float[3]; processedPoints[i].velocity = new float[3];
-            }
-        }
-
-        try {
-            ProcessObjectGeometry(
-                cachedGeometryArray, cachedGeometryArray.Length, listenerPositionArray, listenerForwardArray,
-                maxDistance, reflectionRadius, processedPoints, ref currentValidPointCount
-            );
-        } catch (Exception e) {
-            Debug.LogError($"Error calling ProcessObjectGeometry: {e.Message}\n{e.StackTrace}");
-            currentValidPointCount = 0;
-        }
-
-        currentValidPointCount = Mathf.Clamp(currentValidPointCount, 0, maxOutputPoints);
-
-        try {
-            SynthesizeAudio(processedPoints, currentValidPointCount, audioBuffer, 2, blockSize);
-        } catch (Exception e) {
-            Debug.LogError($"Error calling SynthesizeAudio: {e.Message}\n{e.StackTrace}");
-            Array.Clear(audioBuffer, 0, audioBuffer.Length);
-        }
-    }
-
-    private float[] FlattenVector3Array(Vector3[] vectors) {
-        float[] flatArray = new float[vectors.Length * 3];
-        for (int i = 0; i < vectors.Length; ++i) { flatArray[i*3]=vectors[i].x; flatArray[i*3+1]=vectors[i].y; flatArray[i*3+2]=vectors[i].z; }
-        return flatArray;
     }
 
     private void VisualizeEchoPoints() {
@@ -384,8 +305,8 @@ public class GeometryProcessor : MonoBehaviour
 
     void OnDrawGizmos() {
         if (!mainCamera) { mainCamera = Camera.main; if (!mainCamera) return; }
-        Gizmos.color = Color.yellow; Gizmos.DrawWireSphere(mainCamera.transform.position, maxDistance);
-        Gizmos.color = Color.red; Gizmos.DrawWireSphere(mainCamera.transform.position, reflectionRadius);
+        // Gizmos.color = Color.yellow; Gizmos.DrawWireSphere(mainCamera.transform.position, maxDistance);
+        // Gizmos.color = Color.red; Gizmos.DrawWireSphere(mainCamera.transform.position, reflectionRadius);
 
         if (Application.isPlaying && showDebugVisualization && processedPoints != null) {
             Gizmos.color = Color.cyan;
@@ -395,7 +316,7 @@ public class GeometryProcessor : MonoBehaviour
                  if (processedPoints[i].position == null || processedPoints[i].position.Length < 3) continue;
                  if (Mathf.Approximately(processedPoints[i].position[0], 0f) && Mathf.Approximately(processedPoints[i].position[1], 0f) && Mathf.Approximately(processedPoints[i].position[2], 0f) && Mathf.Approximately(processedPoints[i].parameters.amplitude, 0f)) continue;
                 Vector3 pos = new Vector3(processedPoints[i].position[0], processedPoints[i].position[1], processedPoints[i].position[2]);
-                Gizmos.DrawSphere(pos, 0.03f);
+                Gizmos.DrawSphere(pos, 0.06f);
             }
         }
     }

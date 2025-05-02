@@ -31,7 +31,7 @@
 
 // Constructor
 GeometryProcessorImpl::GeometryProcessorImpl()
-    : sampleRate(44100), blockSize(1024), currentMaxDistance(10.0f),
+    : sampleRate(48000), blockSize(8192), currentMaxDistance(10.0f),
       hrtfLoaded(false), hrtfData(nullptr), hrirLength(0), hrtfMeasurements(0), hrtfSampleRate(0),
       fftConfig(nullptr), ifftConfig(nullptr), fftSize(0), fftComplexSize(0)
 {
@@ -45,13 +45,11 @@ GeometryProcessorImpl::GeometryProcessorImpl()
     // Reset all oscillators
     for (int i = 0; i < MAX_OSCILLATORS; i++) { oscillators[i].reset(); }
     activeOscillatorMap.clear();
-    LOG_INFO("GeometryProcessorImpl constructed.");
 }
 
 // Destructor
 GeometryProcessorImpl::~GeometryProcessorImpl() {
     cleanupResources();
-    LOG_INFO("GeometryProcessorImpl destructed.");
 }
 
 // --- ** ADDED MISSING HELPER FUNCTION DEFINITIONS ** ---
@@ -130,7 +128,6 @@ uint64_t GeometryProcessorImpl::getOscillatorKey(int objectId, int triangleIndex
 
 // Cleanup allocated resources
 void GeometryProcessorImpl::cleanupResources() {
-     LOG_INFO("Cleaning up GeometryProcessor resources...");
      hrtfLoaded = false; hrtfPath.clear();
      if (hrtfData) { mysofa_free(hrtfData); hrtfData = nullptr; LOG_INFO("  libmysofa HRTF data freed."); }
      if (fftConfig) { kiss_fft_free(fftConfig); fftConfig = nullptr; LOG_INFO("  KissFFT forward config freed."); }
@@ -161,7 +158,6 @@ bool GeometryProcessorImpl::precomputeHrirFfts() {
         return false;
     }
 
-    LOG_INFO("Precomputing HRIR FFTs for %d measurements...", hrtfMeasurements);
     try {
         // Ensure cache vectors are clear before resizing
         cachedLeftHrirFfts.clear();
@@ -210,13 +206,11 @@ bool GeometryProcessorImpl::precomputeHrirFfts() {
         return false;
     }
 
-    LOG_INFO("HRIR FFT precomputation complete.");
     return true;
 }
 
 // Initialize or re-initialize the processor
 void GeometryProcessorImpl::initialize(int sr, int block) {
-    LOG_WARN("Hello, anyone there?");
     LOG_INFO("Initializing GeometryProcessor: SR=%d, BlockSize=%d", sr, block);
     // Cleanup if already initialized
     if (hrtfLoaded || fftConfig || ifftConfig || hrtfData) {
@@ -225,6 +219,7 @@ void GeometryProcessorImpl::initialize(int sr, int block) {
     }
     // Set basic parameters
     sampleRate = sr; blockSize = block;
+    pluginSampleRate = sr; pluginBLockSize = block;
     // Reset state
     for (int i = 0; i < MAX_OSCILLATORS; i++) { oscillators[i].reset(); }
     activeOscillatorMap.clear();
@@ -330,7 +325,6 @@ void GeometryProcessorImpl::setHrtfPath(const char* sofaFilePath) {
 
 // Set listener orientation vectors
 void GeometryProcessorImpl::setListenerOrientation(const float* forward, const float* up) {
-    LOG_WARN("Setting listener orientation");
     if (forward) std::copy(forward, forward + 3, listenerForward);
     if (up) std::copy(up, up + 3, listenerUp);
     // Ensure vectors are normalized
@@ -340,7 +334,6 @@ void GeometryProcessorImpl::setListenerOrientation(const float* forward, const f
 
 // Update internal simulation time
 void GeometryProcessorImpl::updateTime(float deltaTime) {
-    LOG_WARN("Updating time");
     // Prevent negative or excessively large delta times which might cause issues
     deltaTime = std::max(0.0f, std::min(deltaTime, 0.1f)); // Clamp delta time e.g., 0 to 100ms
     radarParams.lastFrameTime = radarParams.currentTime;
@@ -362,7 +355,6 @@ void GeometryProcessorImpl::processGeometry(const ObjectGeometry* objects, int o
                 float maxDist, float reflectionRadius,
                 ProcessedPoint* outputPoints, int outputBufferSize, int* outputPointCount)
 {
-    LOG_WARN("Processing geometry");
     // Validate input pointers and buffer size
     if (!outputPoints || !outputPointCount || outputBufferSize <= 0) {
         LOG_ERROR("Invalid output parameters in processGeometry (outputPoints=%p, outputPointCount=%p, bufferSize=%d).",
@@ -466,6 +458,18 @@ void GeometryProcessorImpl::processReferencePoints(
 {
   workingPoints.clear();
   *outputPointCount = 0;
+
+  // Update Listener State (Position and Velocity)
+  currentMaxDistance = maxDist;
+  if (radarParams.frameTime > 1e-9) { // Check against a very small number
+      for (int i = 0; i < 3; i++) {
+          listenerVelocity[i] = (listenerPos[i] - listenerPosition[i]) / static_cast<float>(radarParams.frameTime);
+      }
+  } else { // If deltaTime is zero or negative, assume zero velocity
+      for (int i = 0; i < 3; i++) { listenerVelocity[i] = 0.0f; }
+  }
+  std::copy(listenerPos, listenerPos + 3, listenerPosition); // Store current position
+
   // for each hit‐point:
   for (int i = 0; i < refCount; ++i) {
     // 1) distance filter
@@ -488,7 +492,7 @@ void GeometryProcessorImpl::processReferencePoints(
     // build ProcessedPoint
     ProcessedPoint p;
     p.objectId      = i;
-    p.triangleIndex = 0;
+    p.triangleIndex = i;
     std::copy(refs[i].position, refs[i].position+3, p.position);
     std::copy(refs[i].normal,   refs[i].normal+3,   p.normal);
     p.velocity[0]=p.velocity[1]=p.velocity[2]=0;
@@ -497,12 +501,15 @@ void GeometryProcessorImpl::processReferencePoints(
     p.params       = computeAudioParams(p);
     workingPoints.push_back(p);
   }
-  // then assign to oscillators & copy into outputPoints
-  assignPointsToOscillators(workingPoints.data(), workingPoints.size(), outputBufferSize);
-  int n = (int)workingPoints.size();
-  std::copy(workingPoints.begin(), workingPoints.end(), outputPoints);
-  *outputPointCount = n;
-  printf("The number of points is " + n);
+  // Update oscillator states based on the detected points
+  assignPointsToOscillators(workingPoints.data(), workingPoints.size(), 128);
+
+  // Copy the processed points (up to the buffer size) to the output array for C#
+  int numPointsToCopy = workingPoints.size(); // Already limited by maxPointsToGenerate
+  if (numPointsToCopy > 0) {
+      std::copy(workingPoints.begin(), workingPoints.end(), outputPoints);
+  }
+  *outputPointCount = numPointsToCopy; // Set the actual number of points written
 }
 
 
@@ -1115,6 +1122,8 @@ extern "C" {
 
     EXPORT_API void SynthesizeAudio(const ProcessedPoint* points, int pointCount, float* outputBuffer, int channelCount, int samplesPerChannel) {
         if (processorInstance) {
+            float dt = samplesPerChannel / sampleRate;
+            processorInstance->updateTime(dt);
             processorInstance->synthesizeAudio(points, pointCount, outputBuffer, channelCount, samplesPerChannel);
         } else if (outputBuffer) {
             // Zero buffer if processor not ready but buffer exists

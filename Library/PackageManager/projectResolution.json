@@ -98,6 +98,16 @@
       "source": "registry",
       "testable": false
     },
+    "edu.cornell.xrc.toolkit.core@https://github.com/xrcollaboratory/edu.cornell.xrc.toolkit.core.git": {
+      "name": "edu.cornell.xrc.toolkit.core",
+      "displayName": "XRC Core",
+      "resolvedPath": "C:\\Users\\cwp57\\Desktop\\Echosense\\Library\\PackageCache\\edu.cornell.xrc.toolkit.core@cc68a3fd734a",
+      "fingerprint": "cc68a3fd734afdfd3bbf95242f2def1f5a50bdfd",
+      "editorCompatibility": "6000.0.0a1",
+      "version": "0.2.0",
+      "source": "git",
+      "testable": false
+    },
     "com.unity.modules.accessibility@1.0.0": {
       "name": "com.unity.modules.accessibility",
       "displayName": "Accessibility",

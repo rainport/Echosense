@@ -281,6 +281,16 @@
       },
       "url": "https://packages.unity.com"
     },
+    "edu.cornell.xrc.toolkit.core": {
+      "version": "https://github.com/xrcollaboratory/edu.cornell.xrc.toolkit.core.git",
+      "depth": 0,
+      "source": "git",
+      "dependencies": {
+        "com.unity.inputsystem": "1.11.2",
+        "com.unity.xr.interaction.toolkit": "3.0.7"
+      },
+      "hash": "cc68a3fd734afdfd3bbf95242f2def1f5a50bdfd"
+    },
     "com.unity.modules.accessibility": {
       "version": "1.0.0",
       "depth": 0,

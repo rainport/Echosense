@@ -506,7 +506,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 919132149155446097, guid: b00dccedb41687b48bce125638cbe046, type: 3}
       propertyPath: m_IsActive
-      value: 1
+      value: 0
       objectReference: {fileID: 0}
     - target: {fileID: 8725950543471801552, guid: b00dccedb41687b48bce125638cbe046, type: 3}
       propertyPath: 'm_Materials.Array.data[0]'
@@ -1110,12 +1110,20 @@ PrefabInstance:
       value: 0
       objectReference: {fileID: 0}
     - target: {fileID: 5436116413688082556, guid: 325d51db54e863f44961131369095fe0, type: 3}
+      propertyPath: sigma
+      value: 0.1
+      objectReference: {fileID: 0}
+    - target: {fileID: 5436116413688082556, guid: 325d51db54e863f44961131369095fe0, type: 3}
       propertyPath: maxDistance
       value: 15
       objectReference: {fileID: 0}
     - target: {fileID: 5436116413688082556, guid: 325d51db54e863f44961131369095fe0, type: 3}
       propertyPath: pulseRepFreq
       value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: 5436116413688082556, guid: 325d51db54e863f44961131369095fe0, type: 3}
+      propertyPath: speedOfSound
+      value: 24
       objectReference: {fileID: 0}
     m_RemovedComponents: []
     m_RemovedGameObjects: []
@@ -1140,7 +1148,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 0
+  m_IsActive: 1
 --- !u!136 &956080199
 CapsuleCollider:
   m_ObjectHideFlags: 0
@@ -1420,7 +1428,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 6598815579406187037, guid: 18ddb545287c546e19cc77dc9fbb2189, type: 3}
       propertyPath: m_IsActive
-      value: 1
+      value: 0
       objectReference: {fileID: 0}
     m_RemovedComponents: []
     m_RemovedGameObjects: []
@@ -1545,7 +1553,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 0
+  m_IsActive: 1
 --- !u!64 &1284378023
 MeshCollider:
   m_ObjectHideFlags: 0
@@ -2134,7 +2142,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 0
+  m_IsActive: 1
 --- !u!65 &2142404732
 BoxCollider:
   m_ObjectHideFlags: 0
