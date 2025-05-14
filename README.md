@@ -10,7 +10,10 @@ To use the plugin, add the script geometry_processor.cs as a component to an obj
 
 The following parameters of the plugin can be tuned from within Unity:
 
-Max Distance - maximum range at which objects will be detected
-$\sigma$ - the width of the Gaussian pulse
-Speed of Sound - speed of sound in the medium
+Max Distance - maximum range at which objects will be detected  
+
+$\sigma$ - the width of the Gaussian pulse  
+
+Speed of Sound - speed of sound in the medium  
+
 Pulse Repetition Frequency - frequency at which new pulses are emitted and echoes are generated
