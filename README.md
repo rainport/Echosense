@@ -2,14 +2,13 @@ Echosense is a Unity plugin for spatial audio-based passive echolocation support
 
 It was originally designed to enable navigation for low-vision and blind individuals by providing an intuitive audio embedding of the scene geometry.
 
-To build the plugin, run cmake .. from within the /NativePlugin/build directory. Then, copy geometry_processor.bundle over to /Assets/Plugins. You will also need to install [libmysofa](https://github.com/hoene/libmysofa).
+To build the plugin, run cmake from within the /NativePlugin/build directory. Then copy geometry_processor.bundle over to /Assets/Plugins. You will also need to install [libmysofa](https://github.com/hoene/libmysofa).
 
-To use the plugin, add the script geometry_processor.cs as a component to an object in Unity.
-
+To use the plugin, add the script geometry_processor.cs as a component to an object.
   
-The following parameters of the plugin can be tuned from within Unity:
+The following plugin parameters can be tuned:
 
-Max Distance - maximum range at which objects will be detected  
-$\sigma$ - the width of the Gaussian pulse  
-Speed of Sound - speed of sound in the medium  
-Pulse Repetition Frequency - frequency at which new pulses are emitted and echoes are generated
+Max Distance - max range at which objects will be detected  
+$\sigma$ - width of Gaussian pulse  
+Speed of Sound - speed of sound in medium  
+Pulse Repetition Frequency - frequency of echo generation
