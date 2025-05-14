@@ -7,7 +7,7 @@ To build the plugin, run cmake from within the /NativePlugin/build directory. Th
 To use the plugin, add the script geometry_processor.cs as a component to an object.
 
   
-The following plugin parameters can be tuned in Unity:
+The following plugin parameters can be tuned in Unity:  
 Max Distance - max range at which objects will be detected  
 $\sigma$ - width of Gaussian pulse  
 Speed of Sound - speed of sound in medium  
