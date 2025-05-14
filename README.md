@@ -12,3 +12,7 @@ Max Distance - max range at which objects will be detected
 $\sigma$ - width of Gaussian pulse  
 Speed of Sound - speed of sound in medium  
 Pulse Repetition Frequency - frequency of echo generation
+
+
+https://github.com/user-attachments/assets/2b7e8c11-cca8-41db-a907-6e9297ef33cb
+
